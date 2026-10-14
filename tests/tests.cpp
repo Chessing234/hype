@@ -2201,6 +2201,7 @@ static void write(const QString &path, const QString &content) {
         QTest::keyClick(window, Qt::Key_Up, Qt::ControlModifier | Qt::KeypadModifier);
         QCOMPARE(d.selected(), selected);
         QVERIFY(editor->hasActiveFocus());
+        const int cursorBeforeToggle = editor->property("cursorPosition").toInt();
         QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
         QVERIFY(window->property("markdown").toBool());
         auto source = window->findChild<QQuickItem *>("sourceEditor");
@@ -2220,15 +2221,18 @@ static void write(const QString &path, const QString &content) {
         QCOMPARE(d.source(), beforeToggle);
         QVERIFY(!stage->isVisible());
         QCOMPARE(source->property("text").toString(), d.source());
-        QCOMPARE(source->property("cursorPosition").toInt(), d.sourcePosition());
+        const int sourceCursor =
+            d.sourcePosition() + d.slideSource().indexOf(d.slideText()) + cursorBeforeToggle;
+        QCOMPARE(source->property("cursorPosition").toInt(), sourceCursor);
         QTest::qWait(60);
         auto scroll = window->findChild<QObject *>("sourceScroll");
         auto flick = scroll->property("contentItem").value<QObject *>();
         QRectF rect;
         QVERIFY(QMetaObject::invokeMethod(source, "positionToRectangle", Q_RETURN_ARG(QRectF, rect),
-                                          Q_ARG(int, d.sourcePosition())));
-        QVERIFY(qAbs(flick->property("contentY").toDouble() - rect.y() +
-                     source->property("topPadding").toDouble()) < 2);
+                                          Q_ARG(int, sourceCursor)));
+        QVERIFY(rect.top() >= flick->property("contentY").toDouble());
+        QVERIFY(rect.bottom() <=
+                flick->property("contentY").toDouble() + flick->property("height").toDouble());
         QCOMPARE(d.source(), beforeToggle);
         auto dividerVisible = [&] {
             int start = d.sourcePosition();
@@ -2358,7 +2362,7 @@ static void write(const QString &path, const QString &content) {
         QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
         QVERIFY(!window->property("markdown").toBool());
         QVERIFY(stage->isVisible() && editor->isVisible());
-        QVERIFY(stage->hasActiveFocus());
+        QVERIFY(editor->hasActiveFocus());
         QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
         QVERIFY(window->property("presenting").toBool());
         QVERIFY(!window->findChild<QQuickItem *>("editorPane")->isVisible());
@@ -2457,6 +2461,112 @@ static void write(const QString &path, const QString &content) {
         const double afterInsert = list->property("contentY").toDouble() - list->property("originY").toDouble();
         QVERIFY(qAbs(afterInsert - expected) < 1);
         QVERIFY(afterInsert - beforeInsert <= slideStep);
+        // Map the live cursor through the padding omitted by the slide editor.
+        QString cursorSlides;
+        for (int i = 0; i < 10; ++i)
+            cursorSlides += (i ? "\n\n---\n\n\n" : "\n\n") +
+                            QString("# Slide %1\n\nfirst paragraph\nsecond word here").arg(i) +
+                            QString("\nmore text").repeated(20);
+        d.editSource("---\ntitle: Cursor\n---\n" + cursorSlides + "\n\n");
+        d.select(7);
+        auto bodyStart = [&] {
+            return d.source().indexOf(QString("# Slide %1").arg(d.selected()));
+        };
+        editor->forceActiveFocus();
+        int slideCursor = d.slideText().indexOf("word") + 2;
+        editor->setProperty("cursorPosition", slideCursor);
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+        QVERIFY(source->hasActiveFocus());
+        QCOMPARE(d.selected(), 7);
+        QCOMPARE(source->property("cursorPosition").toInt(), bodyStart() + slideCursor);
+        slideCursor = d.slideText().size() - 4;
+        source->setProperty("cursorPosition", bodyStart() + slideCursor);
+        QTest::keyClick(window, Qt::Key_X);
+        ++slideCursor;
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+        QVERIFY(editor->hasActiveFocus());
+        QCOMPARE(editor->property("cursorPosition").toInt(), slideCursor);
+        auto slideFlick =
+            window->findChild<QObject *>("slideScroll")->property("contentItem").value<QObject *>();
+        QVERIFY(QMetaObject::invokeMethod(editor, "positionToRectangle", Q_RETURN_ARG(QRectF, rect),
+                                          Q_ARG(int, slideCursor)));
+        QTRY_VERIFY(rect.top() >= slideFlick->property("contentY").toDouble() &&
+                    rect.bottom() <= slideFlick->property("contentY").toDouble() +
+                                         slideFlick->property("height").toDouble());
+        QTest::keyClick(window, Qt::Key_Y);
+        ++slideCursor;
+        auto modeButton = window->findChild<QQuickItem *>("modeButton");
+        QVERIFY(modeButton);
+        QTest::mouseClick(
+            window, Qt::LeftButton, Qt::NoModifier,
+            modeButton->mapToScene(QPointF(modeButton->width() / 2, modeButton->height() / 2))
+                .toPoint());
+        QVERIFY(source->hasActiveFocus());
+        QCOMPARE(source->property("cursorPosition").toInt(), bodyStart() + slideCursor);
+
+        QTest::keyClick(window, Qt::Key_Tab);
+        for (int i = 0; i < 2; ++i) {
+            QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+            QVERIFY(list->hasActiveFocus());
+        }
+        QTest::keyClick(window, Qt::Key_Tab);
+        QCOMPARE(d.selected(), 7);
+        QCOMPARE(source->property("cursorPosition").toInt(), bodyStart() + slideCursor);
+
+        d.select(0);
+        const int headerCursor = d.source().indexOf("Cursor") + 2;
+        source->setProperty("cursorPosition", headerCursor);
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+        QCOMPARE(source->property("cursorPosition").toInt(), headerCursor);
+
+        // A sidebar slide change cancels the old position in either editor.
+        for (auto activeEditor : {source, editor}) {
+            activeEditor->setProperty("cursorPosition",
+                                      activeEditor->property("cursorPosition").toInt() + 4);
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTest::keyClick(window, Qt::Key_Right);
+            QTest::keyClick(window, Qt::Key_Tab);
+            QVERIFY(activeEditor->hasActiveFocus());
+            QCOMPARE(activeEditor->property("cursorPosition").toInt(),
+                     activeEditor == source ? bodyStart() : 0);
+            QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+        }
+        QCOMPARE(d.selected(), 2);
+
+        // Tab preserves source-only positions and the current slide's cursor and viewport.
+        d.editSource("---\ntitle: Test\n---\n\n" + many);
+        d.select(20);
+        QVERIFY(QMetaObject::invokeMethod(window, "openMarkdown"));
+        const int metadataCursor = d.source().indexOf("Test") + 2;
+        source->setProperty("cursorPosition", metadataCursor);
+        QCOMPARE(d.selected(), 0);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QVERIFY(list->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Tab);
+        QVERIFY(source->hasActiveFocus());
+        QCOMPARE(source->property("cursorPosition").toInt(), metadataCursor);
+        const int retainedCursor = d.source().indexOf("# Slide 20") + 6;
+        source->setProperty("cursorPosition", retainedCursor);
+        QCOMPARE(d.selected(), 20);
+        QTest::qWait(60);
+        const double retainedScroll = flick->property("contentY").toDouble();
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QVERIFY(source->hasActiveFocus());
+        QCOMPARE(source->property("cursorPosition").toInt(), retainedCursor);
+        QTRY_COMPARE(flick->property("contentY").toDouble(), retainedScroll);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTest::keyClick(window, Qt::Key_Down);
+        QCOMPARE(d.selected(), 21);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QCOMPARE(source->property("cursorPosition").toInt(), int(d.source().indexOf("# Slide 21")));
+        QTest::keyClick(window, Qt::Key_Tab);
+        QVERIFY(list->hasActiveFocus());
+        d.select(0);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QCOMPARE(source->property("cursorPosition").toInt(), int(d.source().indexOf("# Slide 0")));
+
         d.editSource("---\ntitle: Test\n---\n\n" + many);
         d.select(d.count() - 1);
         QVERIFY(QMetaObject::invokeMethod(window, "openMarkdown"));
