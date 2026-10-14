@@ -1588,7 +1588,8 @@ static void write(const QString &path, const QString &content) {
         QTest::keyClick(window, Qt::Key_PageDown, Qt::ControlModifier);
         QCOMPARE(d.selectionFirst(), 10);
         QCOMPARE(d.selectionLast(), 11);
-        for (int i = 0; i < 4; ++i) d.undo();
+        for (int i = 0; i < 4; ++i)
+            d.undo();
         QCOMPARE(d.slide(2).trimmed(), "# S3");
         QCOMPARE(d.slide(3).trimmed(), "# S4");
         // Dragging a slide onto the left half of another drops it before that slide.
