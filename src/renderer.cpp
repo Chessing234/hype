@@ -278,14 +278,14 @@ static QByteArray themedSvg(const QString &svg, const QVariantMap &palette) {
     if (const auto m = root.match(themed); m.hasMatch()) {
         const QString attributes = m.captured(1), ink = palette.value("foreground").toString();
         QString defaults;
-        if (!attributes.contains("xmlns="))
+        if (!attributes.contains(QRegularExpression("(^|\\s)xmlns\\s*=")))
             defaults += " xmlns=\"http://www.w3.org/2000/svg\"";
-        if (!attributes.contains(QRegularExpression("(^|\\s)color=")))
+        if (!attributes.contains(QRegularExpression("(^|\\s)color\\s*=")))
             defaults += " color=\"" + ink + "\"";
-        if (!attributes.contains(QRegularExpression("(^|\\s)fill=")))
+        if (!attributes.contains(QRegularExpression("(^|\\s)fill\\s*=")))
             defaults += " fill=\"" + ink + "\"";
-        if (!attributes.contains("font-family="))
-            defaults += " font-family=\"" + palette.value("font", "JetBrains Mono").toString() + "\"";
+        if (!attributes.contains(QRegularExpression("(^|\\s)font-family\\s*=")))
+            defaults += " font-family=\"" + palette.value("font", "JetBrains Mono").toString().toHtmlEscaped() + "\"";
         themed.insert(m.capturedStart(1), defaults);
     }
     return themed.toUtf8();
@@ -325,7 +325,11 @@ Media parseMedia(const QString &source, const QString &base) {
     if (const auto result = cache.object(key))
         return *result;
     auto result = readMedia(source, base);
-    takeFence(result.text, "svg", &result.svg);
+    result.svgBlocks = takeFence(result.text, "svg", &result.svg);
+    if (result.svgBlocks) {
+        QString remaining = result.text, extra;
+        result.svgBlocks += takeFence(remaining, "svg", &extra);
+    }
     cache.insert(key, new Media(result), qMax(1, int((key.size() + result.text.size()) * 2)));
     return result;
 }
@@ -391,9 +395,7 @@ QStringList slideProblems(const QString &source, const QString &base) {
     auto media = parseMedia(source, base);
     if (!media.error.isEmpty())
         errors << media.error;
-    if (!media.svg.isEmpty()) {
-        if (!media.file.isEmpty())
-            errors << "Use one media item per slide (combine artwork before importing)";
+    if (media.svgBlocks) {
         if (const QString problem = svgProblem(media.svg); !problem.isEmpty())
             errors << problem;
     }
@@ -410,7 +412,7 @@ QStringList slideProblems(const QString &source, const QString &base) {
         matches.next();
         ++count;
     }
-    if (count > 1)
+    if (count + media.svgBlocks > 1)
         errors << "Use one media item per slide (combine artwork before importing)";
     return errors;
 }

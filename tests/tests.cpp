@@ -797,6 +797,11 @@ static void write(const QString &path, const QString &content) {
         QCOMPARE(media.text.trimmed(), QString("# Growth"));
         QVERIFY(media.file.isEmpty());
         QVERIFY(slideProblems(chart, "/tmp").isEmpty());
+        QVERIFY(!slideProblems("```svg\n```\n", "/tmp").isEmpty());
+        QVERIFY(slideProblems(chart + chart, "/tmp").join(' ').contains("one media item"));
+        const QString spacedAttributes = "```svg\n<svg xmlns = \"http://www.w3.org/2000/svg\" "
+            "viewBox = \"0 0 1 1\" fill = \"red\" color = \"red\" font-family = \"sans\"/>\n```\n";
+        QVERIFY(slideProblems(spacedAttributes, "/tmp").isEmpty());
         // Mistakes name their line within the block, or what to use instead.
         QVERIFY(slideProblems("```svg\n<svg viewBox=\"0 0 1 1\">\n<rect>\n</svg>\n```", "/tmp")
                     .value(0).startsWith("SVG line 3: "));
