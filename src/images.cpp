@@ -22,9 +22,10 @@ QImage readSizedImage(const QString &path, QSize canvas, bool span) {
     // A vector image has no real size of its own: draw it at the size it will show, even when
     // that's larger than the size its file declares. Photos are never enlarged.
     const bool vector = reader.format().startsWith("svg");
-    QSize target = vector && !canvas.isEmpty()
-        ? oriented.scaled(canvas, span ? Qt::KeepAspectRatioByExpanding : Qt::KeepAspectRatio)
-        : imageSizeForCanvas(oriented, canvas, span);
+    QSize target =
+        vector && !canvas.isEmpty()
+            ? oriented.scaled(canvas, span ? Qt::KeepAspectRatioByExpanding : Qt::KeepAspectRatio)
+            : imageSizeForCanvas(oriented, canvas, span);
     if (rotated)
         target.transpose();
     if (!target.isEmpty() && target != original)

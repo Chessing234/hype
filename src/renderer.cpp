@@ -705,7 +705,9 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
                 svg.setAspectRatioMode(Qt::KeepAspectRatio);
                 svg.render(p, dest);
             } else
-                p->drawImage(dest, !media.video && !text.isEmpty() ? softenedImage(image, dest.size()) : image);
+                p->drawImage(dest, !media.video && !text.isEmpty()
+                                       ? softenedImage(image, dest.size())
+                                       : image);
             p->restore();
         } else if (!overlayOnly && !backgroundOnly) {
             p->setPen(QColor(palette["accent"].toString()));
