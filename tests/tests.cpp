@@ -799,19 +799,28 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(slideProblems(chart, "/tmp").isEmpty());
         QVERIFY(!slideProblems("```svg\n```\n", "/tmp").isEmpty());
         QVERIFY(slideProblems(chart + chart, "/tmp").join(' ').contains("one media item"));
-        const QString spacedAttributes = "```svg\n<svg xmlns = \"http://www.w3.org/2000/svg\" "
+        const QString spacedAttributes =
+            "```svg\n<svg xmlns = \"http://www.w3.org/2000/svg\" "
             "viewBox = \"0 0 1 1\" fill = \"red\" color = \"red\" font-family = \"sans\"/>\n```\n";
         QVERIFY(slideProblems(spacedAttributes, "/tmp").isEmpty());
         // Mistakes name their line within the block, or what to use instead.
         QVERIFY(slideProblems("```svg\n<svg viewBox=\"0 0 1 1\">\n<rect>\n</svg>\n```", "/tmp")
-                    .value(0).startsWith("SVG line 3: "));
-        QVERIFY(slideProblems("```svg\n<svg viewBox=\"0 0 1 1\"><rect fill=\"var(--purple)\"/></svg>\n```", "/tmp")
-                    .value(0).startsWith("Unknown theme color --purple; use --background"));
-        QVERIFY(slideProblems("```svg\n<svg><rect/></svg>\n```", "/tmp").value(0).contains("viewBox"));
+                    .value(0)
+                    .startsWith("SVG line 3: "));
+        QVERIFY(slideProblems(
+                    "```svg\n<svg viewBox=\"0 0 1 1\"><rect fill=\"var(--purple)\"/></svg>\n```",
+                    "/tmp")
+                    .value(0)
+                    .startsWith("Unknown theme color --purple; use --background"));
+        QVERIFY(
+            slideProblems("```svg\n<svg><rect/></svg>\n```", "/tmp").value(0).contains("viewBox"));
         QVERIFY(slideProblems("![](photo.jpg)\n\n```svg\n<svg viewBox=\"0 0 1 1\"/>\n```", "/tmp")
-                    .join(' ').contains("one media item"));
+                    .join(' ')
+                    .contains("one media item"));
         // Drawn in the theme's colors, below the headline's band.
-        QVariantMap palette{{"background", "#1a1b26"}, {"foreground", "#c0caf5"}, {"accent", "#7aa2f7"},
+        QVariantMap palette{{"background", "#1a1b26"},
+                            {"foreground", "#c0caf5"},
+                            {"accent", "#7aa2f7"},
                             {"font", "JetBrains Mono"}};
         auto drawn = [&] {
             QImage image(960, 540, QImage::Format_ARGB32_Premultiplied);

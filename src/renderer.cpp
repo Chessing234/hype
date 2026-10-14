@@ -245,11 +245,13 @@ static bool takeFence(QString &text, const QString &language, QString *body) {
             if (!fenceLength) {
                 fence = run[0];
                 fenceLength = run.size();
-                if (match.captured(2).trimmed().section(' ', 0, 0).compare(language, Qt::CaseInsensitive) == 0) {
+                if (match.captured(2).trimmed().section(' ', 0, 0).compare(
+                        language, Qt::CaseInsensitive) == 0) {
                     start = position;
                     content = qMin(int(text.size()), end + 1);
                 }
-            } else if (run[0] == fence && run.size() >= fenceLength && match.captured(2).trimmed().isEmpty()) {
+            } else if (run[0] == fence && run.size() >= fenceLength &&
+                       match.captured(2).trimmed().isEmpty()) {
                 fenceLength = 0;
                 if (start >= 0) {
                     *body = text.mid(content, position - content);
@@ -265,13 +267,15 @@ static bool takeFence(QString &text, const QString &language, QString *body) {
 // The deck's colors by name, as var(--accent), and its colors and font as the SVG's defaults,
 // so a drawing follows the theme unless it says otherwise.
 static QByteArray themedSvg(const QString &svg, const QVariantMap &palette) {
-    static const QRegularExpression variable(R"(var\(\s*--([a-z_-]+)\s*\))"), root("<svg\\b([^>]*)>");
+    static const QRegularExpression variable(R"(var\(\s*--([a-z_-]+)\s*\))"),
+        root("<svg\\b([^>]*)>");
     QString themed;
     int last = 0;
     for (auto it = variable.globalMatch(svg); it.hasNext();) {
         const auto m = it.next();
         const QString value = palette.value(m.captured(1).replace('-', '_')).toString();
-        themed += svg.mid(last, m.capturedStart() - last) + (value.isEmpty() ? m.captured(0) : value);
+        themed +=
+            svg.mid(last, m.capturedStart() - last) + (value.isEmpty() ? m.captured(0) : value);
         last = m.capturedEnd();
     }
     themed += svg.mid(last);
@@ -285,7 +289,8 @@ static QByteArray themedSvg(const QString &svg, const QVariantMap &palette) {
         if (!attributes.contains(QRegularExpression("(^|\\s)fill\\s*=")))
             defaults += " fill=\"" + ink + "\"";
         if (!attributes.contains(QRegularExpression("(^|\\s)font-family\\s*=")))
-            defaults += " font-family=\"" + palette.value("font", "JetBrains Mono").toString().toHtmlEscaped() + "\"";
+            defaults += " font-family=\"" +
+                        palette.value("font", "JetBrains Mono").toString().toHtmlEscaped() + "\"";
         themed.insert(m.capturedStart(1), defaults);
     }
     return themed.toUtf8();
@@ -304,12 +309,14 @@ static QString svgProblem(const QString &svg) {
     if (xml.hasError())
         return QString("SVG line %1: %2").arg(xml.lineNumber()).arg(xml.errorString());
     static const QRegularExpression variable(R"(var\(\s*--([a-z_-]+)\s*\))");
-    static const QStringList colors{"background", "foreground", "accent", "green", "red",
-                                    "yellow", "magenta", "cyan", "dark_foreground", "font"};
+    static const QStringList colors{
+        "background", "foreground", "accent", "green",           "red",
+        "yellow",     "magenta",    "cyan",   "dark_foreground", "font"};
     for (auto it = variable.globalMatch(svg); it.hasNext();) {
         const QString name = it.next().captured(1);
         if (!colors.contains(QString(name).replace('-', '_')))
-            return "Unknown theme color --" + name + "; use --" + colors.mid(0, 9).join(", --").replace('_', '-');
+            return "Unknown theme color --" + name + "; use --" +
+                   colors.mid(0, 9).join(", --").replace('_', '-');
     }
     QSvgRenderer renderer(themedSvg(svg, {{"foreground", "#000000"}}));
     if (!renderer.isValid())
@@ -727,7 +734,8 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
     QRectF area(130, 90, 1660, 900);
     if (!media.svg.isEmpty() && media.file.isEmpty()) {
         // Like a video, a drawing under a headline leaves the headline a band at the top.
-        const QRectF rect = text.isEmpty() ? QRectF(70, 50, 1780, 980) : QRectF(100, 280, 1720, 730);
+        const QRectF rect =
+            text.isEmpty() ? QRectF(70, 50, 1780, 980) : QRectF(100, 280, 1720, 730);
         if (!text.isEmpty())
             area = QRectF(130, 40, 1660, 205);
         QSvgRenderer svg(themedSvg(media.svg, palette));
