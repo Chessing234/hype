@@ -23,6 +23,7 @@
 #include <QMimeData>
 #include <QMediaPlayer>
 #include <QPainter>
+#include <QTextTable>
 #include <QPdfDocument>
 #include <QProcess>
 #include <QQmlApplicationEngine>
@@ -2775,6 +2776,59 @@ static void write(const QString &path, const QString &content) {
         original = plain.toPlainText();
         highlightCode(plain, palette);
         QCOMPARE(plain.toPlainText(), original);
+    }
+    void tablesKeepColumnAlignmentAndRules() {
+        Deck deck;
+        QTextDocument doc;
+        layoutSlideText(doc, "| Plan | Price | Seats |\n| --- | :---: | ---: |\n| Basic | $9 | 1 |\n| Team | $29 | 10 |",
+                        deck.palette(), 60, 1660, true, false);
+        QTextTable *table = nullptr;
+        for (auto it = doc.rootFrame()->begin(); !it.atEnd() && !table; ++it)
+            table = qobject_cast<QTextTable *>(it.currentFrame());
+        QVERIFY(table);
+        QCOMPARE(table->rows(), 3);
+        // Sized to its content, not stretched across the slide.
+        QVERIFY2(doc.documentLayout()->frameBoundingRect(table).width() < 1660 / 2,
+                 qPrintable(QString::number(doc.documentLayout()->frameBoundingRect(table).width())));
+        const Qt::Alignment expected[] = {Qt::AlignLeft, Qt::AlignHCenter, Qt::AlignRight};
+        for (int row = 0; row < table->rows(); ++row)
+            for (int column = 0; column < 3; ++column)
+                QCOMPARE(table->cellAt(row, column).firstCursorPosition().blockFormat().alignment() &
+                             Qt::AlignHorizontal_Mask, expected[column]);
+        auto rule = [&](int row) { return table->cellAt(row, 0).format().toTableCellFormat(); };
+        QCOMPARE(rule(0).bottomBorderBrush().color(), QColor(deck.palette()["accent"].toString()));
+        QVERIFY(rule(0).bottomBorder() > rule(1).bottomBorder());
+        QCOMPARE(rule(2).bottomBorder(), 0.0);
+    }
+    void tableCellsKeepExtraSpaces() {
+        Deck deck;
+        auto width = [&](const QString &markdown) {
+            QTextDocument doc;
+            layoutSlideText(doc, markdown, deck.palette(), 60, 1660, true, false);
+            return doc.idealWidth();
+        };
+        const qreal plain = width("| A | B |\n| --- | ---: |\n| x | 1 |");
+        QCOMPARE(width("|A|B|\n|---|---:|\n|x|1|"), plain);
+        QVERIFY(width("| A | B |\n| --- | ---: |\n| x |    1 |") > plain);
+        QVERIFY(width("| A      | B |\n| --- | ---: |\n| x | 1 |") > plain);
+        QTextDocument code;
+        layoutSlideText(code, "| A | B |\n| --- | --- |\n| `a  |  b` | 1 |", deck.palette(), 60, 1660, true, false);
+        QVERIFY(code.toPlainText().contains("a  |  b"));
+    }
+    void tablesWithoutOuterPipesAlignLeft() {
+        Deck deck;
+        QImage table(1920, 1080, QImage::Format_ARGB32);
+        {
+            QPainter painter(&table);
+            paintSlide(&painter, table.rect(), "# Tools\n\nTool | Use\n--- | ---\ncheck | Find problems",
+                       QDir::tempPath(), deck.palette());
+        }
+        // The headline sits above the table, so a left edge near the margin means it was left aligned.
+        int left = table.width();
+        for (int y = 0; y < table.height() / 3; ++y)
+            for (int x = 0; x < left; ++x)
+                if (table.pixelColor(x, y) != table.pixelColor(0, 0)) left = x;
+        QVERIFY2(left < 200, qPrintable(QString::number(left)));
     }
     void headlineFormattingStaysLocal() {
         Deck deck;
