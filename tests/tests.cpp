@@ -2221,7 +2221,8 @@ static void write(const QString &path, const QString &content) {
         QCOMPARE(d.source(), beforeToggle);
         QVERIFY(!stage->isVisible());
         QCOMPARE(source->property("text").toString(), d.source());
-        const int sourceCursor = d.sourcePosition() + d.slideSource().indexOf(d.slideText()) + cursorBeforeToggle;
+        const int sourceCursor =
+            d.sourcePosition() + d.slideSource().indexOf(d.slideText()) + cursorBeforeToggle;
         QCOMPARE(source->property("cursorPosition").toInt(), sourceCursor);
         QTest::qWait(60);
         auto scroll = window->findChild<QObject *>("sourceScroll");
@@ -2230,7 +2231,8 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(QMetaObject::invokeMethod(source, "positionToRectangle", Q_RETURN_ARG(QRectF, rect),
                                           Q_ARG(int, sourceCursor)));
         QVERIFY(rect.top() >= flick->property("contentY").toDouble());
-        QVERIFY(rect.bottom() <= flick->property("contentY").toDouble() + flick->property("height").toDouble());
+        QVERIFY(rect.bottom() <=
+                flick->property("contentY").toDouble() + flick->property("height").toDouble());
         QCOMPARE(d.source(), beforeToggle);
         auto dividerVisible = [&] {
             int start = d.sourcePosition();
@@ -2463,11 +2465,13 @@ static void write(const QString &path, const QString &content) {
         QString cursorSlides;
         for (int i = 0; i < 10; ++i)
             cursorSlides += (i ? "\n\n---\n\n\n" : "\n\n") +
-                QString("# Slide %1\n\nfirst paragraph\nsecond word here").arg(i) +
-                QString("\nmore text").repeated(20);
+                            QString("# Slide %1\n\nfirst paragraph\nsecond word here").arg(i) +
+                            QString("\nmore text").repeated(20);
         d.editSource("---\ntitle: Cursor\n---\n" + cursorSlides + "\n\n");
         d.select(7);
-        auto bodyStart = [&] { return d.source().indexOf(QString("# Slide %1").arg(d.selected())); };
+        auto bodyStart = [&] {
+            return d.source().indexOf(QString("# Slide %1").arg(d.selected()));
+        };
         editor->forceActiveFocus();
         int slideCursor = d.slideText().indexOf("word") + 2;
         editor->setProperty("cursorPosition", slideCursor);
@@ -2482,17 +2486,21 @@ static void write(const QString &path, const QString &content) {
         QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
         QVERIFY(editor->hasActiveFocus());
         QCOMPARE(editor->property("cursorPosition").toInt(), slideCursor);
-        auto slideFlick = window->findChild<QObject *>("slideScroll")->property("contentItem").value<QObject *>();
+        auto slideFlick =
+            window->findChild<QObject *>("slideScroll")->property("contentItem").value<QObject *>();
         QVERIFY(QMetaObject::invokeMethod(editor, "positionToRectangle", Q_RETURN_ARG(QRectF, rect),
                                           Q_ARG(int, slideCursor)));
         QTRY_VERIFY(rect.top() >= slideFlick->property("contentY").toDouble() &&
-                    rect.bottom() <= slideFlick->property("contentY").toDouble() + slideFlick->property("height").toDouble());
+                    rect.bottom() <= slideFlick->property("contentY").toDouble() +
+                                         slideFlick->property("height").toDouble());
         QTest::keyClick(window, Qt::Key_Y);
         ++slideCursor;
         auto modeButton = window->findChild<QQuickItem *>("modeButton");
         QVERIFY(modeButton);
-        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-                         modeButton->mapToScene(QPointF(modeButton->width() / 2, modeButton->height() / 2)).toPoint());
+        QTest::mouseClick(
+            window, Qt::LeftButton, Qt::NoModifier,
+            modeButton->mapToScene(QPointF(modeButton->width() / 2, modeButton->height() / 2))
+                .toPoint());
         QVERIFY(source->hasActiveFocus());
         QCOMPARE(source->property("cursorPosition").toInt(), bodyStart() + slideCursor);
 
@@ -2514,12 +2522,14 @@ static void write(const QString &path, const QString &content) {
 
         // A sidebar slide change cancels the old position in either editor.
         for (auto activeEditor : {source, editor}) {
-            activeEditor->setProperty("cursorPosition", activeEditor->property("cursorPosition").toInt() + 4);
+            activeEditor->setProperty("cursorPosition",
+                                      activeEditor->property("cursorPosition").toInt() + 4);
             QTest::keyClick(window, Qt::Key_Tab);
             QTest::keyClick(window, Qt::Key_Right);
             QTest::keyClick(window, Qt::Key_Tab);
             QVERIFY(activeEditor->hasActiveFocus());
-            QCOMPARE(activeEditor->property("cursorPosition").toInt(), activeEditor == source ? bodyStart() : 0);
+            QCOMPARE(activeEditor->property("cursorPosition").toInt(),
+                     activeEditor == source ? bodyStart() : 0);
             QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
         }
         QCOMPARE(d.selected(), 2);

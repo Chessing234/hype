@@ -89,7 +89,7 @@ ApplicationWindow {
     }
     function switchEditingFocus() {
         if (slideEditor.activeFocus || sourceEditor.activeFocus) thumbnails.forceActiveFocus()
-        else if (markdown) revealSource(false, sourceFlick.contentY, true, 0, sourceEditor.cursorPosition)
+        else if (markdown) restoreSource(sourceEditor.cursorPosition)
         else slideEditor.forceActiveFocus()
     }
     function editorKey(editor, flick, event) {
@@ -195,8 +195,8 @@ ApplicationWindow {
             overviewGrid.forceActiveFocus()
             Qt.callLater(overviewGrid.revealSelection)
         } else if (switchingEditors) {
-            if (markdown) revealSource(false, sourceFlick.contentY, false, 0,
-                sourceOnlyCursor >= 0 ? sourceOnlyCursor : slideTextPosition() + position)
+            if (markdown) restoreSource(
+                sourceOnlyCursor >= 0 ? sourceOnlyCursor : slideTextPosition() + position, false)
             else {
                 slideEditor.cursorPosition = Math.max(0, Math.min(slideEditor.length, position))
                 sourceOnlyCursor = slideEditor.cursorPosition === position ? -1 : sourceEditor.cursorPosition
@@ -224,6 +224,7 @@ ApplicationWindow {
         if (markdown) revealSource(false, previousY)
         else slideEditor.forceActiveFocus()
     }
+    function restoreSource(position, focus = true) { revealSource(false, sourceFlick.contentY, focus, 0, position) }
     function alignSource(focus = true, navigationDelta = 0) { revealSource(true, sourceFlick.contentY, focus, navigationDelta, slideTextPosition()) }
     function revealSource(atTop, previousY, focus = true, navigationDelta = 0, position = deck.sourcePosition()) {
         let start = deck.sourcePosition()
