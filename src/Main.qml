@@ -237,19 +237,11 @@ ApplicationWindow {
                 let bottom = endRect.y + endRect.height
                 let topInset = sourceEditor.topPadding + 2
                 let bottomInset = sourceEditor.bottomPadding + 2
-                if (bottom - rect.y > viewportHeight - topInset - bottomInset)
+                if (bottom - rect.y > viewportHeight - topInset - bottomInset ||
+                    rect.y - topInset < previousY)
                     nextY = rect.y - topInset
-                else if (navigationDelta > 0) {
-                    if (bottom + bottomInset > previousY + viewportHeight)
-                        nextY = bottom + bottomInset - viewportHeight
-                    else if (rect.y - topInset < previousY)
-                        nextY = rect.y - topInset
-                } else {
-                    if (rect.y - topInset < previousY)
-                        nextY = rect.y - topInset
-                    else if (bottom + bottomInset > previousY + viewportHeight)
-                        nextY = bottom + bottomInset - viewportHeight
-                }
+                else if (bottom + bottomInset > previousY + viewportHeight)
+                    nextY = bottom + bottomInset - viewportHeight
             } else if (atTop || rect.y < previousY + sourceEditor.topPadding)
                 nextY = rect.y - sourceEditor.topPadding
             else if (rect.y + rect.height > previousY + viewportHeight - sourceEditor.bottomPadding)
