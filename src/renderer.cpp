@@ -17,6 +17,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSet>
+#include <QSvgRenderer>
 #include <QTemporaryFile>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -24,6 +25,7 @@
 #include <QTextTable>
 #include <QTimer>
 #include <QWaitCondition>
+#include <QXmlStreamReader>
 
 static QRegularExpression mediaRe(R"(!\[([^\]]*)\]\((?:<([^>]+)>|([^\s)]+))\))");
 namespace {
@@ -288,13 +290,113 @@ static Media readMedia(const QString &source, const QString &base) {
     }
     return result;
 }
+// The first fence in this language: taken out of the text, its lines returned in body.
+static bool takeFence(QString &text, const QString &language, QString *body) {
+    static const QRegularExpression marker("^ {0,3}(`{3,}|~{3,})(.*)$");
+    int position = 0, fenceLength = 0, start = -1, content = 0;
+    QChar fence;
+    while (position < text.size()) {
+        int end = text.indexOf('\n', position);
+        if (end < 0)
+            end = text.size();
+        const auto match = marker.match(text.mid(position, end - position));
+        if (match.hasMatch()) {
+            const QString run = match.captured(1);
+            if (!fenceLength) {
+                fence = run[0];
+                fenceLength = run.size();
+                if (match.captured(2).trimmed().section(' ', 0, 0).compare(
+                        language, Qt::CaseInsensitive) == 0) {
+                    start = position;
+                    content = qMin(int(text.size()), end + 1);
+                }
+            } else if (run[0] == fence && run.size() >= fenceLength &&
+                       match.captured(2).trimmed().isEmpty()) {
+                fenceLength = 0;
+                if (start >= 0) {
+                    *body = text.mid(content, position - content);
+                    text.remove(start, qMin(int(text.size()), end + 1) - start);
+                    return true;
+                }
+            }
+        }
+        position = end + 1;
+    }
+    return false;
+}
+// The deck's colors by name, as var(--accent), and its colors and font as the SVG's defaults,
+// so a drawing follows the theme unless it says otherwise.
+static QByteArray themedSvg(const QString &svg, const QVariantMap &palette) {
+    static const QRegularExpression variable(R"(var\(\s*--([a-z_-]+)\s*\))"),
+        root("<svg\\b([^>]*)>");
+    QString themed;
+    int last = 0;
+    for (auto it = variable.globalMatch(svg); it.hasNext();) {
+        const auto m = it.next();
+        const QString value = palette.value(m.captured(1).replace('-', '_')).toString();
+        themed +=
+            svg.mid(last, m.capturedStart() - last) + (value.isEmpty() ? m.captured(0) : value);
+        last = m.capturedEnd();
+    }
+    themed += svg.mid(last);
+    if (const auto m = root.match(themed); m.hasMatch()) {
+        const QString attributes = m.captured(1), ink = palette.value("foreground").toString();
+        QString defaults;
+        if (!attributes.contains(QRegularExpression("(^|\\s)xmlns\\s*=")))
+            defaults += " xmlns=\"http://www.w3.org/2000/svg\"";
+        if (!attributes.contains(QRegularExpression("(^|\\s)color\\s*=")))
+            defaults += " color=\"" + ink + "\"";
+        if (!attributes.contains(QRegularExpression("(^|\\s)fill\\s*=")))
+            defaults += " fill=\"" + ink + "\"";
+        if (!attributes.contains(QRegularExpression("(^|\\s)font-family\\s*=")))
+            defaults += " font-family=\"" +
+                        palette.value("font", "JetBrains Mono").toString().toHtmlEscaped() + "\"";
+        themed.insert(m.capturedStart(1), defaults);
+    }
+    return themed.toUtf8();
+}
+// Why an ```svg fence can't be drawn, or empty when it can. Lines count within the fence.
+static QString svgProblem(const QString &svg) {
+    QXmlStreamReader xml(svg);
+    bool first = true;
+    while (!xml.atEnd()) {
+        if (xml.readNext() == QXmlStreamReader::StartElement && first) {
+            first = false;
+            if (xml.name() != QLatin1String("svg"))
+                return "An svg block holds one <svg> element";
+        }
+    }
+    if (xml.hasError())
+        return QString("SVG line %1: %2").arg(xml.lineNumber()).arg(xml.errorString());
+    static const QRegularExpression variable(R"(var\(\s*--([a-z_-]+)\s*\))");
+    static const QStringList colors{
+        "background", "foreground", "accent", "green",           "red",
+        "yellow",     "magenta",    "cyan",   "dark_foreground", "font"};
+    for (auto it = variable.globalMatch(svg); it.hasNext();) {
+        const QString name = it.next().captured(1);
+        if (!colors.contains(QString(name).replace('-', '_')))
+            return "Unknown theme color --" + name + "; use --" +
+                   colors.mid(0, 9).join(", --").replace('_', '-');
+    }
+    QSvgRenderer renderer(themedSvg(svg, {{"foreground", "#000000"}}));
+    if (!renderer.isValid())
+        return "Qt can't draw this SVG";
+    if (renderer.viewBoxF().isEmpty())
+        return "Give the SVG a viewBox, or a width and height";
+    return {};
+}
 Media parseMedia(const QString &source, const QString &base) {
     // Parsing is pure: file existence and modification checks remain at call sites.
     static thread_local QCache<QString, Media> cache(8 * 1024 * 1024);
     const QString key = base + QChar(0) + source;
     if (const auto result = cache.object(key))
         return *result;
-    const auto result = readMedia(source, base);
+    auto result = readMedia(source, base);
+    result.svgBlocks = takeFence(result.text, "svg", &result.svg);
+    if (result.svgBlocks) {
+        QString remaining = result.text, extra;
+        result.svgBlocks += takeFence(remaining, "svg", &extra);
+    }
     cache.insert(key, new Media(result), qMax(1, int((key.size() + result.text.size()) * 2)));
     return result;
 }
@@ -360,6 +462,10 @@ QStringList slideProblems(const QString &source, const QString &base) {
     auto media = parseMedia(source, base);
     if (!media.error.isEmpty())
         errors << media.error;
+    if (media.svgBlocks) {
+        if (const QString problem = svgProblem(media.svg); !problem.isEmpty())
+            errors << problem;
+    }
     if (!media.file.isEmpty() && !QFileInfo::exists(media.path))
         errors << "Missing media: " + media.file;
     if (!media.file.isEmpty() && !media.video && QFileInfo::exists(media.path) &&
@@ -373,7 +479,7 @@ QStringList slideProblems(const QString &source, const QString &base) {
         matches.next();
         ++count;
     }
-    if (count > 1)
+    if (count + media.svgBlocks > 1)
         errors << "Use one media item per slide (combine artwork before importing)";
     return errors;
 }
@@ -491,6 +597,56 @@ static QString preserveLineBreaks(QString markdown) {
     }
     return lines.join('\n');
 }
+static const QRegularExpression &tableDelimiter() {
+    // A delimiter row, with or without outer pipes: | --- | :-: | or --- | ---:
+    static const QRegularExpression re("^ {0,3}(?=[^\\n]*\\|)\\|? *:?-+:? *(?:\\| *:?-+:? *)*\\|? *$",
+                                       QRegularExpression::MultilineOption);
+    return re;
+}
+// Markdown trims table cells. Keep the one space each side that reads as
+// separation, and turn any more into non-breaking spaces that pad the cell.
+static QString padTableCells(const QString &markdown) {
+    QStringList lines = markdown.split('\n');
+    const QStringList visible = outsideCode(markdown).split('\n');
+    auto pad = [&](int index) {
+        QString &line = lines[index];
+        const QString &mask = visible[index];
+        QList<int> pipes;
+        for (int i = 0; i < mask.size(); ++i)
+            if (mask[i] == '|' && (i == 0 || mask[i - 1] != '\\'))
+                pipes.append(i);
+        if (pipes.isEmpty())
+            return;
+        if (pipes.first() > 0 && !mask.left(pipes.first()).trimmed().isEmpty())
+            pipes.prepend(-1);
+        if (pipes.last() < mask.size() - 1 && !mask.mid(pipes.last() + 1).trimmed().isEmpty())
+            pipes.append(mask.size());
+        // Work from the end so earlier positions stay valid.
+        for (int c = pipes.size() - 1; c > 0; --c) {
+            int start = pipes[c - 1] + 1, end = pipes[c];
+            if (line.mid(start, end - start).trimmed().isEmpty())
+                continue;
+            int trailing = 0, leading = 0;
+            while (line[end - 1 - trailing] == ' ')
+                ++trailing;
+            while (line[start + leading] == ' ')
+                ++leading;
+            if (trailing > 1)
+                line.replace(end - trailing, trailing - 1, QString(trailing - 1, QChar::Nbsp));
+            if (leading > 1)
+                line.replace(start + 1, leading - 1, QString(leading - 1, QChar::Nbsp));
+        }
+    };
+    for (int i = 1; i < lines.size(); ++i) {
+        if (!tableDelimiter().match(visible[i]).hasMatch() || !visible[i - 1].contains('|'))
+            continue;
+        pad(i - 1);
+        for (int row = i + 1; row < lines.size() && visible[row].contains('|') &&
+                              !visible[row].trimmed().isEmpty(); ++row)
+            pad(row);
+    }
+    return lines.join('\n');
+}
 static void sizeSlideText(QTextDocument &doc, const QVariantMap &palette, qreal fontSize,
                           qreal width, bool centered, bool code) {
     // A null page size suspends layout while every format below changes; the
@@ -513,7 +669,9 @@ static void sizeSlideText(QTextDocument &doc, const QVariantMap &palette, qreal 
         QTextCursor cursor(block);
         QTextBlockFormat bf = block.blockFormat();
         int level = bf.headingLevel();
-        bf.setAlignment(centered ? Qt::AlignHCenter : Qt::AlignLeft);
+        // Table cells keep the alignment their column's delimiter asked for.
+        if (!cursor.currentTable())
+            bf.setAlignment(centered ? Qt::AlignHCenter : Qt::AlignLeft);
         bf.setTopMargin(level ? fontSize * 0.15 : 0);
         bf.setBottomMargin(fontSize * 0.22);
         bf.setLineHeight(115, QTextBlockFormat::ProportionalHeight);
@@ -557,17 +715,45 @@ static void sizeSlideText(QTextDocument &doc, const QVariantMap &palette, qreal 
         if (auto table = qobject_cast<QTextTable *>(it.currentFrame())) {
             auto fmt = table->format();
             fmt.setBorder(0);
-            fmt.setCellPadding(fontSize * 0.2);
-            fmt.setCellSpacing(fontSize * 0.1);
-            fmt.setWidth(QTextLength(QTextLength::PercentageLength, 100));
+            fmt.setBorderCollapse(true);
+            fmt.setCellPadding(fontSize * 0.25);
+            fmt.setCellSpacing(0);
+            // Size to the content rather than the slide, so columns stay close enough to read across.
+            fmt.setWidth(QTextLength());
+            fmt.setAlignment(centered ? Qt::AlignHCenter : Qt::AlignLeft);
             table->setFormat(fmt);
+            // Qt aligns body cells by the delimiter row but leaves the header at the default.
+            for (int column = 0; table->rows() > 1 && column < table->columns(); ++column) {
+                QTextCursor header = table->cellAt(0, column).firstCursorPosition();
+                auto bf = header.blockFormat();
+                bf.setAlignment(table->cellAt(1, column).firstCursorPosition().blockFormat().alignment());
+                header.setBlockFormat(bf);
+            }
+            // A gap between columns, a firm rule under the header and faint ones between rows.
+            QColor rule(palette["foreground"].toString());
+            rule.setAlphaF(0.2);
+            for (int row = 0; row < table->rows(); ++row)
+                for (int column = 0; column < table->columns(); ++column) {
+                    auto cell = table->cellAt(row, column);
+                    auto cf = cell.format().toTableCellFormat();
+                    if (column)
+                        cf.setLeftPadding(fontSize * 0.8);
+                    if (column + 1 < table->columns())
+                        cf.setRightPadding(fontSize * 0.8);
+                    if (row + 1 < table->rows()) {
+                        cf.setBottomBorder(row ? fontSize * 0.03 : fontSize * 0.06);
+                        cf.setBottomBorderStyle(QTextFrameFormat::BorderStyle_Solid);
+                        cf.setBottomBorderBrush(row ? rule : QColor(palette["accent"].toString()));
+                    }
+                    cell.setFormat(cf);
+                }
         }
     doc.setTextWidth(width);
 }
 void layoutSlideText(QTextDocument &doc, const QString &markdown, const QVariantMap &palette,
                      qreal fontSize, qreal width, bool centered, bool code) {
     doc.setUndoRedoEnabled(false);
-    doc.setMarkdown(preserveLineBreaks(markdown), QTextDocument::MarkdownDialectGitHub);
+    doc.setMarkdown(preserveLineBreaks(padTableCells(markdown)), QTextDocument::MarkdownDialectGitHub);
     sizeSlideText(doc, palette, fontSize, width, centered, code);
 }
 static QMutex fitMutex;
@@ -629,13 +815,31 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
     QString text = media.text.trimmed();
     auto problems = slideProblems(source, base);
     QRectF area(130, 90, 1660, 900);
+    if (!media.svg.isEmpty() && media.file.isEmpty()) {
+        // Like a video, a drawing under a headline leaves the headline a band at the top.
+        const QRectF rect =
+            text.isEmpty() ? QRectF(70, 50, 1780, 980) : QRectF(100, 280, 1720, 730);
+        if (!text.isEmpty())
+            area = QRectF(130, 40, 1660, 205);
+        QSvgRenderer svg(themedSvg(media.svg, palette));
+        if (!overlayOnly && !backgroundOnly && svg.isValid() && !svg.viewBoxF().isEmpty()) {
+            QSizeF size = svg.viewBoxF().size();
+            size.scale(rect.size(), Qt::KeepAspectRatio);
+            svg.setAspectRatioMode(Qt::KeepAspectRatio);
+            svg.render(p, QRectF(rect.center() - QPointF(size.width(), size.height()) / 2, size));
+        }
+    }
     if (!media.file.isEmpty()) {
         QString path =
             media.video ? (media.poster.isEmpty() ? ensurePoster(media.path, base) : media.poster)
                         : media.path;
         const QRectF rect = mediaRect(media);
         const QSize pixels = p->deviceTransform().mapRect(rect).size().toSize();
-        QImage image = loadedImage(path, pixels, media.span);
+        // An SVG with nothing over it is drawn as vectors, sharp at any size and in PDF. Its
+        // small raster only gives its shape and edge colors for the background.
+        const bool vector = !media.video && text.isEmpty() &&
+                            QStringList{"svg", "svgz"}.contains(QFileInfo(path).suffix().toLower());
+        QImage image = loadedImage(path, vector ? QSize(480, 270) : pixels, media.span);
         // Video backgrounds use the first frame, even with a custom poster.
         const QImage backdrop = media.video && !media.span && !media.poster.isEmpty() &&
             (media.background == "blur" || media.background == "auto")
@@ -694,9 +898,14 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
             const QRectF dest = mediaImageRect(media, image.size());
             p->save();
             p->setClipRect(rect);
-            p->drawImage(dest, !media.video && !media.placed() && !text.isEmpty()
-                                   ? softenedImage(image, dest.size())
-                                   : image);
+            QSvgRenderer svg;
+            if (vector && svg.load(path)) {
+                svg.setAspectRatioMode(Qt::KeepAspectRatio);
+                svg.render(p, dest);
+            } else
+                p->drawImage(dest, !media.video && !media.placed() && !text.isEmpty()
+                                       ? softenedImage(image, dest.size())
+                                       : image);
             p->restore();
         } else if (!overlayOnly && !backgroundOnly) {
             p->setPen(QColor(palette["accent"].toString()));
@@ -734,8 +943,10 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
         bool quote = text.startsWith('>');
         bool list = text.contains(
             QRegularExpression("^\\s*(?:[-*+] |[0-9]+[.)] )", QRegularExpression::MultilineOption));
-        bool table = text.contains(QRegularExpression("\\|[ :|-]+\\|"));
-        bool centered = !(code || quote || list || table);
+        bool table = text.contains(tableDelimiter());
+        // A table alone on its slide sits in the middle; beside other text it lines up with it.
+        const bool tableOnly = table && !text.split('\n').filter(QRegularExpression("^(?!.*\\|).*\\S")).size();
+        bool centered = tableOnly || !(code || quote || list || table);
         const QString alignment = slideProperty(source, "alignment");
         if (alignment == "left")
             centered = false;
@@ -743,7 +954,7 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
             centered = true;
         bool stack = (text.contains('\n') || text.contains('\r')) && !text.startsWith('#') &&
                      !quote && !list && !code;
-        qreal low = 8, high = code ? 56 : quote ? 64 : list ? 72 : table ? 60 : stack ? 128 : 76;
+        qreal low = 8, high = code ? 56 : quote ? 64 : list || table ? 72 : stack ? 128 : 76;
         if (media.video && !media.span)
             high = 48;
         QTextDocument doc;
@@ -799,7 +1010,7 @@ void SlideItem::setDeck(Deck *deck) {
         disconnect(m_deck, nullptr, this, nullptr);
     m_deck = deck;
     if (deck)
-        connect(deck, &Deck::changed, this, [this] { update(); });
+        connect(deck, &Deck::selectionChanged, this, [this] { update(); });
     emit deckChanged();
     update();
 }
@@ -890,7 +1101,7 @@ Thumbnails::Thumbnails(Deck *deck) {
     auto timer = new QTimer(this);
     timer->setInterval(60);
     timer->setSingleShot(true);
-    connect(deck, &Deck::changed, this, [this, timer] {
+    connect(deck, &Deck::selectionChanged, this, [this, timer] {
         if (m_stopping->load())
             return;
         ++*m_generation;

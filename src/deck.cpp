@@ -12,6 +12,7 @@
 #include <QDataStream>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFutureWatcher>
@@ -138,7 +139,7 @@ QString setScalar(QString header, const QString &key, const QString &value) {
 Deck::Deck(QObject *parent, const QString &exportProgram) : QAbstractListModel(parent),
     m_exportProgram(exportProgram.isEmpty() ? QCoreApplication::applicationFilePath() : exportProgram) {
     discoverThemes();
-    m_source = "---\ntitle: Untitled\ntheme: tokyo-night\n---\n\n# Your next idea\n";
+    m_source = "---\ntheme: tokyo-night\n---\n\n# Your next idea\n";
     m_parsed = parseDeck(m_source);
     m_saved = m_source;
     // Writers may truncate, or remove and recreate, the file; read it once they settle.
@@ -146,6 +147,19 @@ Deck::Deck(QObject *parent, const QString &exportProgram) : QAbstractListModel(p
     m_reloadTimer.setInterval(50);
     connect(&m_watcher, &QFileSystemWatcher::fileChanged, &m_reloadTimer, qOverload<>(&QTimer::start));
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, &m_reloadTimer, qOverload<>(&QTimer::start));
+    // Thumbnails cache by slide source, so a picture replaced on disk needs its own refresh.
+    m_mediaTimer.setSingleShot(true);
+    m_mediaTimer.setInterval(100);
+    connect(&m_mediaWatcher, &QFileSystemWatcher::fileChanged, &m_mediaTimer, qOverload<>(&QTimer::start));
+    connect(&m_mediaWatcher, &QFileSystemWatcher::directoryChanged, &m_mediaTimer, qOverload<>(&QTimer::start));
+    connect(&m_mediaTimer, &QTimer::timeout, this, [this] {
+        watchMedia();
+        m_renderIds.clear();
+        m_mediaCache.clear();
+        m_sizeClock.invalidate();
+        ++m_revision;
+        notifyChanged();
+    });
     connect(&m_reloadTimer, &QTimer::timeout, this, [this] {
         QFile file(m_path);
         if (m_path.isEmpty())
@@ -204,9 +218,13 @@ static int followSlide(const QVector<Slide> &before, const QVector<Slide> &after
 // undo restores the old text.
 void Deck::reloadExternal(const QString &disk) {
     const int selected = followSlide(m_parsed.slides, parseDeck(disk).slides, m_selected);
+    const bool unchanged = disk == m_source;
     m_saved = disk;
     m_externalChange = false;
     apply(disk, selected);
+    // Matching text leaves the source alone, but the saved state changed.
+    if (unchanged)
+        notifyChanged();
     setStatus("Reloaded external changes.");
 }
 int Deck::rowCount(const QModelIndex &parent) const { return parent.isValid() ? 0 : count(); }
@@ -250,7 +268,7 @@ void Deck::apply(const QString &source, int selected, bool history, int anchor,
     if (source == m_source && !structure) {
         m_anchor = qBound(0, anchor < 0 ? selected : anchor, count() - 1);
         m_selected = qBound(0, selected, count() - 1);
-        emit changed();
+        emit selectionChanged();
         return;
     }
     if (history) {
@@ -299,7 +317,7 @@ void Deck::apply(const QString &source, int selected, bool history, int anchor,
     else
         for (int i : modified)
             emit dataChanged(index(i), index(i));
-    emit changed();
+    notifyChanged();
     if (!m_parsed.error.isEmpty())
         setStatus(m_parsed.error);
 }
@@ -308,14 +326,14 @@ void Deck::select(int index) {
     if (m_selected == index && m_anchor == index)
         return;
     m_selected = m_anchor = index;
-    emit changed();
+    emit selectionChanged();
 }
 void Deck::extendSelection(int index) {
     index = qBound(0, index, count() - 1);
     if (m_selected == index)
         return;
     m_selected = index;
-    emit changed();
+    emit selectionChanged();
 }
 void Deck::moveSelection(int direction) {
     if (direction < 0 && selectionFirst() > 0)
@@ -345,8 +363,11 @@ void Deck::selectAt(int position) {
             select(i);
             return;
         }
+    // Front matter precedes every slide; keep the selection at the document's start.
+    select(0);
 }
 int Deck::sourcePosition() const { return m_parsed.slides.value(m_selected).start; }
+int Deck::sourceEndPosition() const { return m_parsed.slides.value(m_selected).end; }
 void Deck::editSource(const QString &s) { apply(s, m_selected); }
 void Deck::editSlide(const QString &s) {
     const auto range = m_parsed.slides.value(m_selected);
@@ -515,7 +536,7 @@ QString Deck::sizeLabel() const {
     return QLocale().formattedDataSize(totalBytes(), 0, QLocale::DataSizeSIFormat);
 }
 QStringList Deck::fontNames() const { return QFontDatabase::families(); }
-QString Deck::fontName() const { return scalar(m_parsed.header, "font", "JetBrains Mono"); }
+QString Deck::fontName() const { return palette()["font"].toString(); }
 void Deck::chooseFont(const QString &family) {
     if (!fontNames().contains(family) || family == fontName())
         return;
@@ -621,6 +642,41 @@ void Deck::watch() {
         m_watcher.addPath(m_path);
     // The directory reveals a file that was replaced or recreated.
     m_watcher.addPath(QFileInfo(m_path).absolutePath());
+    watchMedia();
+}
+// Watch the media folders, for files added or replaced, and each file in them, for writes in place.
+void Deck::watchMedia() {
+    const QStringList watched = m_mediaWatcher.files() + m_mediaWatcher.directories();
+    QStringList paths;
+    if (!m_path.isEmpty())
+        for (const char *folder : {"images", "videos"}) {
+            const QDir dir(QDir(baseDir()).filePath(folder));
+            if (!dir.exists())
+                continue;
+            paths.append(dir.absolutePath());
+            for (const QString &name : dir.entryList(QDir::Files))
+                paths.append(dir.absoluteFilePath(name));
+        }
+    QStringList stale, added;
+    for (const QString &path : watched)
+        if (!paths.contains(path))
+            stale.append(path);
+    for (const QString &path : paths)
+        if (!watched.contains(path))
+            added.append(path);
+    if (!stale.isEmpty())
+        m_mediaWatcher.removePaths(stale);
+    if (!added.isEmpty())
+        m_mediaWatcher.addPaths(added);
+}
+// Every document change also refreshes the selected slide, after the document's own listeners.
+void Deck::notifyChanged() {
+    emit changed();
+    emit selectionChanged();
+    if (const QString font = fontName(); font != m_notifiedFont) {
+        m_notifiedFont = font;
+        emit fontChanged();
+    }
 }
 QString Deck::dialogDirectory() const {
     QSettings settings(QSettings::IniFormat, QSettings::UserScope, "hype", "hype");
@@ -653,6 +709,7 @@ bool Deck::reopenLastPresentation() {
     m_saved.clear();
     apply(QString(), 0, false);
     m_externalChange = true;
+    notifyChanged();
     setStatus("The last presentation is missing. Use Save As to recover it to a new file.");
     return false;
 }
@@ -670,7 +727,7 @@ bool Deck::loadPath(const QString &path, bool remember) {
     m_redo.clear();
     m_externalChange = false;
     watch();
-    emit changed();
+    notifyChanged();
     setStatus("Opened " + title());
     if (remember)
         rememberPresentation(m_path);
@@ -745,7 +802,7 @@ bool Deck::savePath(const QString &path) {
     m_saved = m_source;
     m_externalChange = false;
     watch();
-    emit changed();
+    notifyChanged();
     setStatus("Saved");
     rememberPresentation(m_path);
     if (!m_recoveryDirectory.isEmpty())
@@ -802,13 +859,24 @@ bool Deck::saveCopyPath(const QString &path) {
     QList<QPair<QString, QString>> copies;
     // Check every collision before publishing anything; compare streams so a
     // large video never requires two whole-file buffers in the editor.
+    const QString stagingPrefix = QDir(staging.path()).absolutePath() + '/';
     for (const QString &kind : {QString("images"), QString("videos")}) {
         const QDir source(baseDir() + '/' + kind);
-        for (const auto &name : source.entryList(QDir::Files)) {
+        // Copy the whole tree, hidden files included, since references may
+        // point anywhere inside it. Poster caches are regenerated on demand.
+        for (QDirIterator it(source.absolutePath(), QDir::Files | QDir::Hidden,
+                             QDirIterator::Subdirectories);
+             it.hasNext();) {
+            const QString file = it.next();
+            if (file.startsWith(stagingPrefix))
+                continue;
+            const QString name = source.relativeFilePath(file);
+            if (kind == "images" && name.startsWith(".hype-poster-") && !name.contains('/'))
+                continue;
             const QString relative = kind + '/' + name;
             const QString target = destination.filePath(relative);
             if (QFile::exists(target)) {
-                QFile a(source.filePath(name)), b(target);
+                QFile a(file), b(target);
                 QCryptographicHash ah(QCryptographicHash::Sha256), bh(QCryptographicHash::Sha256);
                 if (!a.open(QIODevice::ReadOnly) || !b.open(QIODevice::ReadOnly) ||
                     !ah.addData(&a) || !bh.addData(&b)) {
@@ -816,14 +884,14 @@ bool Deck::saveCopyPath(const QString &path) {
                     return false;
                 }
                 if (ah.result() != bh.result()) {
-                    setStatus("Save As media collision: " + name);
+                    setStatus("Save As media collision: " + relative);
                     return false;
                 }
             } else {
-                QDir().mkpath(staging.filePath(kind));
                 const QString staged = staging.filePath(relative);
-                if (!QFile::copy(source.filePath(name), staged)) {
-                    setStatus("Could not copy " + name);
+                QDir().mkpath(QFileInfo(staged).absolutePath());
+                if (!QFile::copy(file, staged)) {
+                    setStatus("Could not copy " + relative);
                     return false;
                 }
                 copies.append({staged, target});
@@ -834,13 +902,18 @@ bool Deck::saveCopyPath(const QString &path) {
     auto rollback = [&] {
         for (const auto &file : published)
             QFile::remove(file);
-        for (const auto &directory : directories)
-            QDir().rmdir(directory);
+        for (auto directory = directories.crbegin(); directory != directories.crend(); ++directory)
+            QDir().rmdir(*directory);
     };
     for (const auto &copy : copies) {
-        const QString directory = QFileInfo(copy.second).absolutePath();
-        if (!QDir(directory).exists()) {
-            if (!QDir().mkpath(directory)) {
+        // Record every missing ancestor parent-first so rollback can remove
+        // them child-first.
+        QStringList missing;
+        for (QString directory = QFileInfo(copy.second).absolutePath();
+             !QFileInfo::exists(directory); directory = QFileInfo(directory).absolutePath())
+            missing.prepend(directory);
+        for (const auto &directory : missing) {
+            if (!QDir().mkdir(directory)) {
                 rollback();
                 setStatus("Could not create media directory");
                 return false;
@@ -854,6 +927,20 @@ bool Deck::saveCopyPath(const QString &path) {
         }
         published << copy.second;
     }
+    // Media outside images/ and videos/ is not copied, so refuse a copy that
+    // would lose a reference the original resolves.
+    for (int i = 0; i < count(); ++i) {
+        const QStringList before = slideProblems(slide(i), baseDir());
+        for (const QString &problem : slideProblems(slide(i), destination.absolutePath())) {
+            if (!before.contains(problem)) {
+                rollback();
+                setStatus(QString("Save As could not copy media for slide %1: %2")
+                              .arg(i + 1)
+                              .arg(problem));
+                return false;
+            }
+        }
+    }
     if (savePath(path))
         return true;
     rollback();
@@ -866,10 +953,11 @@ void Deck::newDeck() {
     m_path.clear();
     m_saved.clear();
     m_externalChange = false;
-    apply("---\ntitle: Untitled\ntheme: tokyo-night\n---\n\n# Your next idea\n", 0);
+    apply("---\ntheme: tokyo-night\n---\n\n# Your next idea\n", 0);
     m_undo.clear();
     m_redo.clear();
     watch();
+    notifyChanged();
     if (!m_recoveryDirectory.isEmpty()) {
         m_checkpointSource.clear();
         checkpoint();
