@@ -93,27 +93,28 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write(content.toUtf8());
     }
-// Builds original/ with nested, hidden, unreferenced, and poster-cache media.
-static QString nestedMediaDeck(const QTemporaryDir &tmp) {
-    const QString original = tmp.filePath("original");
-    for (const char *directory : {"images/nested", "images/posters", "images/.private", "images/unused",
-             "videos/clips"})
-        QDir().mkpath(original + "/" + directory);
-    QImage image(8, 8, QImage::Format_RGB32);
-    image.fill(Qt::red);
-    image.save(original + "/images/nested/photo.png");
-    image.fill(Qt::blue);
-    image.save(original + "/images/posters/.cover.png");
-    image.fill(Qt::yellow);
-    image.save(original + "/images/.private/logo.png");
-    write(original + "/videos/clips/talk.mp4", "video");
-    write(original + "/images/unused/extra.txt", "extra");
-    write(original + "/images/.hype-poster-0123456789abcdef.jpg", "cache");
-    write(original + "/talk.md", "![](images/nested/photo.png)\n\n---\n\n"
-        "![poster=\"images/posters/.cover.png\"](videos/clips/talk.mp4)\n\n---\n\n"
-        "![](images/.private/logo.png)\n\n---\n\n![](images/gone.png)\n");
-    return original;
-}
+    // Builds original/ with nested, hidden, unreferenced, and poster-cache media.
+    static QString nestedMediaDeck(const QTemporaryDir &tmp) {
+        const QString original = tmp.filePath("original");
+        for (const char *directory : {"images/nested", "images/posters", "images/.private",
+                                      "images/unused", "videos/clips"})
+            QDir().mkpath(original + "/" + directory);
+        QImage image(8, 8, QImage::Format_RGB32);
+        image.fill(Qt::red);
+        image.save(original + "/images/nested/photo.png");
+        image.fill(Qt::blue);
+        image.save(original + "/images/posters/.cover.png");
+        image.fill(Qt::yellow);
+        image.save(original + "/images/.private/logo.png");
+        write(original + "/videos/clips/talk.mp4", "video");
+        write(original + "/images/unused/extra.txt", "extra");
+        write(original + "/images/.hype-poster-0123456789abcdef.jpg", "cache");
+        write(original + "/talk.md",
+              "![](images/nested/photo.png)\n\n---\n\n"
+              "![poster=\"images/posters/.cover.png\"](videos/clips/talk.mp4)\n\n---\n\n"
+              "![](images/.private/logo.png)\n\n---\n\n![](images/gone.png)\n");
+        return original;
+    }
   private slots:
     void initTestCase() {
         QVERIFY(settingsDirectory.isValid());
@@ -2219,15 +2220,17 @@ static QString nestedMediaDeck(const QTemporaryDir &tmp) {
         QCOMPARE(d.count(), 4);
         for (int i = 0; i < 3; ++i)
             QVERIFY(slideProblems(d.slide(i), d.baseDir()).isEmpty());
-        QCOMPARE(slideProblems(d.slide(3), d.baseDir()), QStringList{"Missing media: images/gone.png"});
+        QCOMPARE(slideProblems(d.slide(3), d.baseDir()),
+                 QStringList{"Missing media: images/gone.png"});
         const QString copy = tmp.filePath("copy");
         QVERIFY(QDir().mkpath(copy + "/images"));
         write(copy + "/images/.hype-poster-0123456789abcdef.jpg", "other cache");
         QVERIFY2(d.saveCopyPath(copy + "/talk.md"), qPrintable(d.status()));
         QCOMPARE(d.path(), copy + "/talk.md");
-        for (const QString &relative : {QString("images/nested/photo.png"), QString("videos/clips/talk.mp4"),
-                 QString("images/posters/.cover.png"), QString("images/.private/logo.png"),
-                 QString("images/unused/extra.txt")}) {
+        for (const QString &relative :
+             {QString("images/nested/photo.png"), QString("videos/clips/talk.mp4"),
+              QString("images/posters/.cover.png"), QString("images/.private/logo.png"),
+              QString("images/unused/extra.txt")}) {
             QFile a(original + '/' + relative), b(copy + '/' + relative);
             QVERIFY2(b.open(QIODevice::ReadOnly), qPrintable(relative));
             QVERIFY(a.open(QIODevice::ReadOnly));
@@ -2238,7 +2241,8 @@ static QString nestedMediaDeck(const QTemporaryDir &tmp) {
         QCOMPARE(cache.readAll(), QByteArray("other cache"));
         for (int i = 0; i < 3; ++i)
             QVERIFY(slideProblems(d.slide(i), d.baseDir()).isEmpty());
-        QCOMPARE(slideProblems(d.slide(3), d.baseDir()), QStringList{"Missing media: images/gone.png"});
+        QCOMPARE(slideProblems(d.slide(3), d.baseDir()),
+                 QStringList{"Missing media: images/gone.png"});
     }
     void saveCopyRemovesCreatedDirectories() {
         QTemporaryDir tmp;
@@ -2274,7 +2278,8 @@ static QString nestedMediaDeck(const QTemporaryDir &tmp) {
         QVERIFY(image.save(tmp.filePath("outside.png")));
         QVERIFY(QDir().mkpath(escape + "/images"));
         QVERIFY(image.save(escape + "/images/kept.png"));
-        write(escape + "/talk.md", "![](images/kept.png)\n\n---\n\n![](images/../../outside.png)\n");
+        write(escape + "/talk.md",
+              "![](images/kept.png)\n\n---\n\n![](images/../../outside.png)\n");
         Deck d;
         QVERIFY(d.loadPath(escape + "/talk.md"));
         QCOMPARE(d.count(), 2);
@@ -2290,7 +2295,8 @@ static QString nestedMediaDeck(const QTemporaryDir &tmp) {
     }
     void saveCopyIgnoresItsStagingDirectory() {
         QTemporaryDir tmp;
-        const QString original = tmp.filePath("original"), copy = tmp.filePath("original/videos/copy");
+        const QString original = tmp.filePath("original"),
+                      copy = tmp.filePath("original/videos/copy");
         QVERIFY(QDir().mkpath(original + "/images"));
         QVERIFY(QDir().mkpath(copy));
         write(original + "/images/extra.txt", "extra");
@@ -2302,7 +2308,7 @@ static QString nestedMediaDeck(const QTemporaryDir &tmp) {
         QVERIFY(extra.open(QIODevice::ReadOnly));
         QCOMPARE(extra.readAll(), QByteArray("extra"));
         for (QDirIterator it(copy, QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot,
-                 QDirIterator::Subdirectories);
+                             QDirIterator::Subdirectories);
              it.hasNext();) {
             const QString entry = it.next();
             QVERIFY2(!entry.contains(".hype-save-"), qPrintable(entry));

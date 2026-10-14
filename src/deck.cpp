@@ -857,7 +857,8 @@ bool Deck::saveCopyPath(const QString &path) {
         const QDir source(baseDir() + '/' + kind);
         // Copy the whole tree, hidden files included, since references may
         // point anywhere inside it. Poster caches are regenerated on demand.
-        for (QDirIterator it(source.absolutePath(), QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
+        for (QDirIterator it(source.absolutePath(), QDir::Files | QDir::Hidden,
+                             QDirIterator::Subdirectories);
              it.hasNext();) {
             const QString file = it.next();
             if (file.startsWith(stagingPrefix))
@@ -901,8 +902,8 @@ bool Deck::saveCopyPath(const QString &path) {
         // Record every missing ancestor parent-first so rollback can remove
         // them child-first.
         QStringList missing;
-        for (QString directory = QFileInfo(copy.second).absolutePath(); !QFileInfo::exists(directory);
-             directory = QFileInfo(directory).absolutePath())
+        for (QString directory = QFileInfo(copy.second).absolutePath();
+             !QFileInfo::exists(directory); directory = QFileInfo(directory).absolutePath())
             missing.prepend(directory);
         for (const auto &directory : missing) {
             if (!QDir().mkdir(directory)) {
@@ -926,7 +927,9 @@ bool Deck::saveCopyPath(const QString &path) {
         for (const QString &problem : slideProblems(slide(i), destination.absolutePath())) {
             if (!before.contains(problem)) {
                 rollback();
-                setStatus(QString("Save As could not copy media for slide %1: %2").arg(i + 1).arg(problem));
+                setStatus(QString("Save As could not copy media for slide %1: %2")
+                              .arg(i + 1)
+                              .arg(problem));
                 return false;
             }
         }
