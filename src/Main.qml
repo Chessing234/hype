@@ -166,7 +166,8 @@ ApplicationWindow {
         // The slide editor omits boundary blank lines, but preserves indentation.
         return deck.sourcePosition() + deck.slideSource.indexOf(deck.slideText)
     }
-    function setMode(name, preserveEditing = false) {
+    function setMode(name) { changeMode(name, false) }
+    function changeMode(name, preserveEditing) {
         const switchingEditors = preserveEditing && !overview && name !== "overview"
         const editorFocused = sourceEditor.activeFocus || slideEditor.activeFocus
         const position = switchingEditors && markdown
@@ -192,7 +193,7 @@ ApplicationWindow {
     // Ctrl+M flips between the overview and whichever editing mode you came from.
     property string editingMode: "visual"
     function toggleOverview() { setMode(overview ? editingMode : "overview") }
-    function toggleSource() { setMode(markdown && !overview ? "visual" : "markdown", true) }
+    function toggleSource() { changeMode(markdown && !overview ? "visual" : "markdown", true) }
     // Moves the selected slides by whole rows in the overview, one slide elsewhere.
     function moveSlides(delta) {
         if (Math.abs(delta) === 1) deck.moveSelection(delta)
