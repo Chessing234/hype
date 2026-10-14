@@ -200,7 +200,7 @@ Slide navigation and selection shortcuts apply when the sidebar or preview has f
 | Arrow keys | Previous / next slide; up and down move by a row in Overview |
 | Enter | Open the selected slide from Overview |
 | Page Up / Page Down | Jump five slides, or five rows in Overview |
-| Home / End | First / last slide |
+| Home / End | First / last slide when focused in a slides list; start / end of line in a text box |
 | Ctrl+Up or Ctrl+Left | Move selected slides earlier (Ctrl+Up by a row in Overview) |
 | Ctrl+Down or Ctrl+Right | Move selected slides later (Ctrl+Down by a row in Overview) |
 | Ctrl+Page Up / Ctrl+Page Down | Move selected slides five places earlier / later, including in Overview |
@@ -215,7 +215,7 @@ Slide navigation and selection shortcuts apply when the sidebar or preview has f
 | Escape | Leave presentation |
 | Space | Play / pause video while presenting |
 
-The mouse wheel over the sidebar selects the previous or next slide. Home/End jumps to the first/last slide throughout Visual mode, including its input field. In full Markdown mode, Home/End moves within the current line. In either editor, Page Up/Down scrolls a page; Ctrl+Home/End goes to the start/end of the text. Slide movement shortcuts work when the sidebar, preview, or Overview has focus; they leave the selected slides together and stop at the deck boundaries.
+The mouse wheel over the sidebar selects the previous or next slide. Home/End jumps to the first/last slide when the focus is in the slides list (Visual mode or Overview) and moves to the start/end of the line when a text box has focus. Page Up/Down scrolls a page; Ctrl+Home/End goes to the start/end of the text. Slide movement shortcuts work when the sidebar, preview, or Overview has focus; they leave the selected slides together and stop at the deck boundaries.
 
 ## Run from source
 
@@ -225,5 +225,7 @@ To build Hype yourself, install a C++17 compiler, make, Qt 6.9 or newer, FFmpeg,
 ./bin/build
 ./build/hype open examples/welcome.md
 ```
+
+`bin/build` uses a Qt toolchain under `build/qt/` when present, then falls back to `qmake6` on your PATH. It checks for Qt 6.9 or newer before compiling. Set `HYPE_QMAKE=/path/to/qmake6` to select a different toolchain.
 
 For a launcher entry that rebuilds this checkout when opened, run `./bin/install-dev` and choose **Hype (Development)**.

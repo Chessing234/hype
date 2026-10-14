@@ -12,6 +12,7 @@
 #include <QDataStream>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFutureWatcher>
@@ -138,7 +139,7 @@ QString setScalar(QString header, const QString &key, const QString &value) {
 Deck::Deck(QObject *parent, const QString &exportProgram) : QAbstractListModel(parent),
     m_exportProgram(exportProgram.isEmpty() ? QCoreApplication::applicationFilePath() : exportProgram) {
     discoverThemes();
-    m_source = "---\ntitle: Untitled\ntheme: tokyo-night\n---\n\n# Your next idea\n";
+    m_source = "---\ntheme: tokyo-night\n---\n\n# Your next idea\n";
     m_parsed = parseDeck(m_source);
     m_saved = m_source;
     // Writers may truncate, or remove and recreate, the file; read it once they settle.
@@ -851,13 +852,24 @@ bool Deck::saveCopyPath(const QString &path) {
     QList<QPair<QString, QString>> copies;
     // Check every collision before publishing anything; compare streams so a
     // large video never requires two whole-file buffers in the editor.
+    const QString stagingPrefix = QDir(staging.path()).absolutePath() + '/';
     for (const QString &kind : {QString("images"), QString("videos")}) {
         const QDir source(baseDir() + '/' + kind);
-        for (const auto &name : source.entryList(QDir::Files)) {
+        // Copy the whole tree, hidden files included, since references may
+        // point anywhere inside it. Poster caches are regenerated on demand.
+        for (QDirIterator it(source.absolutePath(), QDir::Files | QDir::Hidden,
+                             QDirIterator::Subdirectories);
+             it.hasNext();) {
+            const QString file = it.next();
+            if (file.startsWith(stagingPrefix))
+                continue;
+            const QString name = source.relativeFilePath(file);
+            if (kind == "images" && name.startsWith(".hype-poster-") && !name.contains('/'))
+                continue;
             const QString relative = kind + '/' + name;
             const QString target = destination.filePath(relative);
             if (QFile::exists(target)) {
-                QFile a(source.filePath(name)), b(target);
+                QFile a(file), b(target);
                 QCryptographicHash ah(QCryptographicHash::Sha256), bh(QCryptographicHash::Sha256);
                 if (!a.open(QIODevice::ReadOnly) || !b.open(QIODevice::ReadOnly) ||
                     !ah.addData(&a) || !bh.addData(&b)) {
@@ -865,14 +877,14 @@ bool Deck::saveCopyPath(const QString &path) {
                     return false;
                 }
                 if (ah.result() != bh.result()) {
-                    setStatus("Save As media collision: " + name);
+                    setStatus("Save As media collision: " + relative);
                     return false;
                 }
             } else {
-                QDir().mkpath(staging.filePath(kind));
                 const QString staged = staging.filePath(relative);
-                if (!QFile::copy(source.filePath(name), staged)) {
-                    setStatus("Could not copy " + name);
+                QDir().mkpath(QFileInfo(staged).absolutePath());
+                if (!QFile::copy(file, staged)) {
+                    setStatus("Could not copy " + relative);
                     return false;
                 }
                 copies.append({staged, target});
@@ -883,13 +895,18 @@ bool Deck::saveCopyPath(const QString &path) {
     auto rollback = [&] {
         for (const auto &file : published)
             QFile::remove(file);
-        for (const auto &directory : directories)
-            QDir().rmdir(directory);
+        for (auto directory = directories.crbegin(); directory != directories.crend(); ++directory)
+            QDir().rmdir(*directory);
     };
     for (const auto &copy : copies) {
-        const QString directory = QFileInfo(copy.second).absolutePath();
-        if (!QDir(directory).exists()) {
-            if (!QDir().mkpath(directory)) {
+        // Record every missing ancestor parent-first so rollback can remove
+        // them child-first.
+        QStringList missing;
+        for (QString directory = QFileInfo(copy.second).absolutePath();
+             !QFileInfo::exists(directory); directory = QFileInfo(directory).absolutePath())
+            missing.prepend(directory);
+        for (const auto &directory : missing) {
+            if (!QDir().mkdir(directory)) {
                 rollback();
                 setStatus("Could not create media directory");
                 return false;
@@ -903,6 +920,20 @@ bool Deck::saveCopyPath(const QString &path) {
         }
         published << copy.second;
     }
+    // Media outside images/ and videos/ is not copied, so refuse a copy that
+    // would lose a reference the original resolves.
+    for (int i = 0; i < count(); ++i) {
+        const QStringList before = slideProblems(slide(i), baseDir());
+        for (const QString &problem : slideProblems(slide(i), destination.absolutePath())) {
+            if (!before.contains(problem)) {
+                rollback();
+                setStatus(QString("Save As could not copy media for slide %1: %2")
+                              .arg(i + 1)
+                              .arg(problem));
+                return false;
+            }
+        }
+    }
     if (savePath(path))
         return true;
     rollback();
@@ -915,7 +946,7 @@ void Deck::newDeck() {
     m_path.clear();
     m_saved.clear();
     m_externalChange = false;
-    apply("---\ntitle: Untitled\ntheme: tokyo-night\n---\n\n# Your next idea\n", 0);
+    apply("---\ntheme: tokyo-night\n---\n\n# Your next idea\n", 0);
     m_undo.clear();
     m_redo.clear();
     watch();

@@ -93,6 +93,28 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write(content.toUtf8());
     }
+    // Builds original/ with nested, hidden, unreferenced, and poster-cache media.
+    static QString nestedMediaDeck(const QTemporaryDir &tmp) {
+        const QString original = tmp.filePath("original");
+        for (const char *directory : {"images/nested", "images/posters", "images/.private",
+                                      "images/unused", "videos/clips"})
+            QDir().mkpath(original + "/" + directory);
+        QImage image(8, 8, QImage::Format_RGB32);
+        image.fill(Qt::red);
+        image.save(original + "/images/nested/photo.png");
+        image.fill(Qt::blue);
+        image.save(original + "/images/posters/.cover.png");
+        image.fill(Qt::yellow);
+        image.save(original + "/images/.private/logo.png");
+        write(original + "/videos/clips/talk.mp4", "video");
+        write(original + "/images/unused/extra.txt", "extra");
+        write(original + "/images/.hype-poster-0123456789abcdef.jpg", "cache");
+        write(original + "/talk.md",
+              "![](images/nested/photo.png)\n\n---\n\n"
+              "![poster=\"images/posters/.cover.png\"](videos/clips/talk.mp4)\n\n---\n\n"
+              "![](images/.private/logo.png)\n\n---\n\n![](images/gone.png)\n");
+        return original;
+    }
   private slots:
     void initTestCase() {
         QVERIFY(settingsDirectory.isValid());
@@ -628,6 +650,17 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(parsed.slides[1].source.contains("---"));
         for (auto &s : parsed.slides)
             QCOMPARE(source.mid(s.start, s.end - s.start), s.source);
+    }
+    void newDeckTitleFollowsFileName() {
+        QTemporaryDir tmp;
+        Deck d;
+        QCOMPARE(d.title(), "Untitled");
+        QVERIFY(d.savePath(tmp.filePath("talk.md")));
+        QCOMPARE(d.title(), "talk");
+        d.newDeck();
+        QCOMPARE(d.title(), "Untitled");
+        QVERIFY(d.savePath(tmp.filePath("second_talk.md")));
+        QCOMPARE(d.title(), "second_talk");
     }
     void emptyBoundariesAndUnicode() {
         auto p = parseDeck("# Æble 🍎\n---\n\n---\n");
@@ -1974,10 +2007,16 @@ static void write(const QString &path, const QString &content) {
         editor->forceActiveFocus();
         QVERIFY(editor->hasActiveFocus());
         const QString beforeJump = d.source();
+        const QString editText = editor->property("text").toString();
+        const int lineEnd = editText.indexOf('\n') < 0 ? editText.size() : editText.indexOf('\n');
+        QVERIFY(lineEnd > 2);
+        editor->setProperty("cursorPosition", 2);
         QTest::keyClick(window, Qt::Key_End);
-        QCOMPARE(d.selected(), d.count() - 1);
+        QCOMPARE(d.selected(), 20);
+        QCOMPARE(editor->property("cursorPosition").toInt(), lineEnd);
         QTest::keyClick(window, Qt::Key_Home);
-        QCOMPARE(d.selected(), 0);
+        QCOMPARE(d.selected(), 20);
+        QCOMPARE(editor->property("cursorPosition").toInt(), 0);
         QCOMPARE(d.source(), beforeJump);
         d.select(20);
         const QString beforeTab = d.source();
@@ -2223,6 +2262,108 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(d.saveCopyPath(destination + "/presentation.md"));
         QVERIFY(QFile::exists(destination + "/images/a.png"));
         QCOMPARE(d.path(), destination + "/presentation.md");
+    }
+    void saveCopyCopiesNestedMedia() {
+        QTemporaryDir tmp;
+        const QString original = nestedMediaDeck(tmp);
+        Deck d;
+        QVERIFY(d.loadPath(original + "/talk.md"));
+        QCOMPARE(d.count(), 4);
+        for (int i = 0; i < 3; ++i)
+            QVERIFY(slideProblems(d.slide(i), d.baseDir()).isEmpty());
+        QCOMPARE(slideProblems(d.slide(3), d.baseDir()),
+                 QStringList{"Missing media: images/gone.png"});
+        const QString copy = tmp.filePath("copy");
+        QVERIFY(QDir().mkpath(copy + "/images"));
+        write(copy + "/images/.hype-poster-0123456789abcdef.jpg", "other cache");
+        QVERIFY2(d.saveCopyPath(copy + "/talk.md"), qPrintable(d.status()));
+        QCOMPARE(d.path(), copy + "/talk.md");
+        for (const QString &relative :
+             {QString("images/nested/photo.png"), QString("videos/clips/talk.mp4"),
+              QString("images/posters/.cover.png"), QString("images/.private/logo.png"),
+              QString("images/unused/extra.txt")}) {
+            QFile a(original + '/' + relative), b(copy + '/' + relative);
+            QVERIFY2(b.open(QIODevice::ReadOnly), qPrintable(relative));
+            QVERIFY(a.open(QIODevice::ReadOnly));
+            QCOMPARE(b.readAll(), a.readAll());
+        }
+        QFile cache(copy + "/images/.hype-poster-0123456789abcdef.jpg");
+        QVERIFY(cache.open(QIODevice::ReadOnly));
+        QCOMPARE(cache.readAll(), QByteArray("other cache"));
+        for (int i = 0; i < 3; ++i)
+            QVERIFY(slideProblems(d.slide(i), d.baseDir()).isEmpty());
+        QCOMPARE(slideProblems(d.slide(3), d.baseDir()),
+                 QStringList{"Missing media: images/gone.png"});
+    }
+    void saveCopyRemovesCreatedDirectories() {
+        QTemporaryDir tmp;
+        const QString original = nestedMediaDeck(tmp), blocked = tmp.filePath("blocked");
+        Deck d;
+        QVERIFY(d.loadPath(original + "/talk.md"));
+        QVERIFY(QDir().mkpath(blocked + "/talk.md"));
+        QVERIFY(!d.saveCopyPath(blocked + "/talk.md"));
+        QVERIFY(!QFileInfo::exists(blocked + "/images"));
+        QVERIFY(!QFileInfo::exists(blocked + "/videos"));
+        QCOMPARE(d.path(), original + "/talk.md");
+    }
+    void saveCopyRejectsNestedCollision() {
+        QTemporaryDir tmp;
+        const QString original = nestedMediaDeck(tmp), clash = tmp.filePath("clash");
+        Deck d;
+        QVERIFY(d.loadPath(original + "/talk.md"));
+        QVERIFY(QDir().mkpath(clash + "/images/nested"));
+        write(clash + "/images/nested/photo.png", "different");
+        QVERIFY(!d.saveCopyPath(clash + "/talk.md"));
+        QVERIFY2(d.status().contains("images/nested/photo.png"), qPrintable(d.status()));
+        QVERIFY(!QFileInfo::exists(clash + "/videos"));
+        QVERIFY(!QFileInfo::exists(clash + "/images/posters"));
+        QFile kept(clash + "/images/nested/photo.png");
+        QVERIFY(kept.open(QIODevice::ReadOnly));
+        QCOMPARE(kept.readAll(), QByteArray("different"));
+    }
+    void saveCopyRejectsBrokenReferences() {
+        QTemporaryDir tmp;
+        const QString escape = tmp.filePath("escape"), copy = tmp.filePath("deep/copy");
+        QImage image(8, 8, QImage::Format_RGB32);
+        image.fill(Qt::green);
+        QVERIFY(image.save(tmp.filePath("outside.png")));
+        QVERIFY(QDir().mkpath(escape + "/images"));
+        QVERIFY(image.save(escape + "/images/kept.png"));
+        write(escape + "/talk.md",
+              "![](images/kept.png)\n\n---\n\n![](images/../../outside.png)\n");
+        Deck d;
+        QVERIFY(d.loadPath(escape + "/talk.md"));
+        QCOMPARE(d.count(), 2);
+        QVERIFY(slideProblems(d.slide(0), d.baseDir()).isEmpty());
+        QVERIFY(slideProblems(d.slide(1), d.baseDir()).isEmpty());
+        QVERIFY(QDir().mkpath(copy));
+        QVERIFY(!d.saveCopyPath(copy + "/talk.md"));
+        QVERIFY(!QFileInfo::exists(copy + "/talk.md"));
+        QVERIFY(!QFileInfo::exists(copy + "/images"));
+        QCOMPARE(d.path(), escape + "/talk.md");
+        QVERIFY2(d.status().contains("slide 2"), qPrintable(d.status()));
+        QVERIFY2(d.status().contains("Missing media"), qPrintable(d.status()));
+    }
+    void saveCopyIgnoresItsStagingDirectory() {
+        QTemporaryDir tmp;
+        const QString original = tmp.filePath("original"),
+                      copy = tmp.filePath("original/videos/copy");
+        QVERIFY(QDir().mkpath(original + "/images"));
+        QVERIFY(QDir().mkpath(copy));
+        write(original + "/images/extra.txt", "extra");
+        write(original + "/talk.md", "# Hello");
+        Deck d;
+        QVERIFY(d.loadPath(original + "/talk.md"));
+        QVERIFY(d.saveCopyPath(copy + "/talk.md"));
+        QFile extra(copy + "/images/extra.txt");
+        QVERIFY(extra.open(QIODevice::ReadOnly));
+        QCOMPARE(extra.readAll(), QByteArray("extra"));
+        for (QDirIterator it(copy, QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot,
+                             QDirIterator::Subdirectories);
+             it.hasNext();) {
+            const QString entry = it.next();
+            QVERIFY2(!entry.contains(".hype-save-"), qPrintable(entry));
+        }
     }
     void mediaControlsPreserveCodeAndAltText() {
         Deck d;
@@ -2710,7 +2851,9 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects()[0]);
         auto preview = window->findChild<QQuickItem *>("slidePreview");
-        QVERIFY(preview);
+        auto quick = window->findChild<QQuickItem *>("slideQuickPreview");
+        auto frame = window->findChild<QQuickItem *>("slideFrame");
+        QVERIFY(preview && quick && frame);
         for (int i = 0; i < 40; ++i) {
             deck.select((i * 7) % 18);
             QTest::qWait(5);
@@ -2726,6 +2869,22 @@ static void write(const QString &path, const QString &content) {
         capture = preview->grabToImage();
         QTRY_VERIFY(!capture->image().isNull());
         QCOMPARE(capture->image().pixelColor(capture->image().width() / 2, capture->image().height() / 2),
+                 QColor::fromRgb(QColor::fromHsv(17 * 19, 230, 210).rgb()));
+        // A late thumbnail must never cover the full render, even if its visible
+        // state lags behind the full image's Ready notification.
+        quick->setProperty("source", "image://slides/" + deck.renderId(0));
+        QTRY_COMPARE_WITH_TIMEOUT(quick->property("status").toInt(), 1, 5000);
+        quick->setVisible(true);
+        QVERIFY(quick->isVisible());
+        auto thumbnailCapture = quick->grabToImage();
+        QTRY_VERIFY(!thumbnailCapture->image().isNull());
+        QCOMPARE(thumbnailCapture->image().pixelColor(thumbnailCapture->image().width() / 2,
+                                                      thumbnailCapture->image().height() / 2),
+                 QColor::fromRgb(QColor::fromHsv(0, 230, 210).rgb()));
+        auto stageCapture = frame->grabToImage();
+        QTRY_VERIFY(!stageCapture->image().isNull());
+        QCOMPARE(stageCapture->image().pixelColor(stageCapture->image().width() / 2,
+                                                  stageCapture->image().height() / 2),
                  QColor::fromRgb(QColor::fromHsv(17 * 19, 230, 210).rgb()));
     }
     void imageTextOverlaysEveryLayout() {
@@ -3151,6 +3310,39 @@ static void write(const QString &path, const QString &content) {
         cr.replace("\n", "\r");
         QCOMPARE(render(cr), render(explicitBreaks));
         QCOMPARE(render("`one`\n`two`"), render("`one`\\\n`two`"));
+    }
+    void svgStaysSharp() {
+        QTemporaryDir tmp;
+        QVERIFY(QDir().mkpath(tmp.path() + "/images"));
+        // An SVG declaring a small size, as icons and design-tool exports usually do.
+        write(tmp.path() + "/images/chart.svg",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 400 240\">"
+              "<rect x=\"20\" y=\"140\" width=\"60\" height=\"80\" fill=\"#7aa2f7\"/>"
+              "<text x=\"20\" y=\"30\" font-size=\"20\" fill=\"#c0caf5\">Requests per "
+              "second</text></svg>");
+        // Loaded for a slide, it takes the slide's size rather than its declared 400 by 240.
+        const QImage loaded =
+            readSizedImage(tmp.path() + "/images/chart.svg", QSize(1780, 980), false);
+        QCOMPARE(loaded.size(), QSize(1633, 980));
+        // Alone on a slide, it stays vector in a PDF: its text is text, and no picture is embedded.
+        write(tmp.path() + "/talk.md", "![fit](chart.svg)\n");
+        Deck deck;
+        QVERIFY(deck.loadPath(tmp.path() + "/talk.md"));
+        QVERIFY(deck.exportPdf(tmp.path() + "/vector.pdf"));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(tmp.path() + "/vector.pdf"), QPdfDocument::Error::None);
+        QVERIFY(pdf.getAllText(0).text().contains("Requests per second"));
+        QFile file(tmp.path() + "/vector.pdf");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QVERIFY(!file.readAll().contains("/Subtype /Image"));
+        // Under a headline it is still softened as a picture, from a sharp full-size copy.
+        deck.editSource("![fit](chart.svg)\n\n# Growth\n");
+        QVERIFY(deck.exportPdf(tmp.path() + "/softened.pdf"));
+        QFile softened(tmp.path() + "/softened.pdf");
+        QVERIFY(softened.open(QIODevice::ReadOnly));
+        const QByteArray bytes = softened.readAll();
+        QVERIFY(bytes.contains("/Subtype /Image"));
+        QVERIFY(!bytes.contains("/Width 400"));
     }
     void workSizesToTheMachine() {
         const qint64 mb = 1 << 20, gb = 1LL << 30;

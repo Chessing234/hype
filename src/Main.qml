@@ -95,12 +95,6 @@ ApplicationWindow {
             return
         }
         let control = event.modifiers & Qt.ControlModifier
-        if (!win.markdown && editor === slideEditor && event.modifiers === Qt.NoModifier &&
-            (event.key === Qt.Key_Home || event.key === Qt.Key_End)) {
-            event.accepted = true
-            deck.select(event.key === Qt.Key_Home ? 0 : deck.count - 1)
-            return
-        }
         if (control && event.key === Qt.Key_Z) {
             event.accepted = true
             event.modifiers & Qt.ShiftModifier ? deck.redo() : deck.undo()
@@ -826,14 +820,14 @@ ApplicationWindow {
                 ["? / F1", "Show these shortcuts"] ] },
             { title: "Slides", keys: [
                 ["Arrows", "Previous or next slide, by row in Overview"], ["Page Up / Page Down", "Jump five slides, or five rows in Overview"],
-                ["Home / End", "First or last slide"], ["Shift+Arrows", "Extend the selection"],
+                ["Home / End", "First or last slide when focused in Slides list"], ["Shift+Arrows", "Extend the selection"],
                 ["Ctrl+Arrows", "Move selected slides"], ["Ctrl+Page Up / Page Down", "Move selected slides five places"],
                 ["Ctrl+Home / End", "Move selected slides to first or last"], ["Ctrl+Enter", "Add a slide"],
                 ["Ctrl+D", "Duplicate"], ["Delete", "Delete"] ] },
             { title: "Editing", keys: [
                 ["Ctrl+B", "Bold"], ["Ctrl+I", "Italic"], ["Ctrl+U", "Underline"], ["Ctrl+H", "Headline"], ["Ctrl+K", "Code block"],
                 ["Ctrl+/", "Comment, hidden on slide"],
-                ["Ctrl+Z", "Undo"], ["Ctrl+Shift+Z", "Redo"], ["Ctrl+V", "Paste text, or add and name media"] ] }
+                ["Home / End", "Start or end of the line"], ["Ctrl+Z", "Undo"], ["Ctrl+Shift+Z", "Redo"], ["Ctrl+V", "Paste text, or add and name media"] ] }
         ]
         contentItem: ColumnLayout {
             spacing: 22; focus: true
@@ -1176,22 +1170,24 @@ ApplicationWindow {
                 property real slideWidth: Math.min(width-margin*2,(height-margin*2)*16/9)
                 Item {
                     id: slideFrame; objectName: "slideFrame"; width: stage.slideWidth; height: width*9/16; anchors.centerIn: parent
-                    Image {
-                        id: slidePreview; objectName: "slidePreview"; anchors.fill: parent
-                        source: "image://slides/" + (deck.revision, deck.renderId(deck.selected)) + (animation.active ? "/background" : "")
-                        asynchronous: true; retainWhileLoading: true; cache: true; sourceSize: Qt.size(1920, 1080)
-                        property int shownSlide: -1
-                        onStatusChanged: if (status === Image.Ready) shownSlide = deck.selected
-                    }
-                    // Moving to a slide whose full render is not ready yet shows its sidebar
-                    // thumbnail at once, soft but correct, until the sharp one arrives. Edits to
-                    // the current slide keep the previous sharp frame instead, so typing never blurs.
+                    // Keep the fast thumbnail behind the full render. Even if it remains visible
+                    // briefly after loading, it cannot cover the sharp image once that is ready.
                     Image {
                         objectName: "slideQuickPreview"; anchors.fill: parent
                         visible: slidePreview.status === Image.Loading && slidePreview.shownSlide !== deck.selected && status === Image.Ready
                         // The same URL and size as the sidebar thumbnail, so it comes from Qt's pixmap cache.
                         source: "image://slides/" + (deck.revision, deck.renderId(deck.selected))
                         asynchronous: true; cache: true; sourceSize: Qt.size(340, 192)
+                    }
+                    Image {
+                        id: slidePreview; objectName: "slidePreview"; anchors.fill: parent
+                        source: "image://slides/" + (deck.revision, deck.renderId(deck.selected)) + (animation.active ? "/background" : "")
+                        asynchronous: true; retainWhileLoading: true; cache: true; sourceSize: Qt.size(1920, 1080)
+                        property int shownSlide: -1
+                        // On a new slide, let its thumbnail show while this render loads. Edits to
+                        // the same slide retain the previous sharp frame until the new one is ready.
+                        visible: status === Image.Ready || shownSlide === deck.selected
+                        onStatusChanged: if (status === Image.Ready) shownSlide = deck.selected
                     }
                     Loader {
                         id: animation; objectName: "animationLoader"
