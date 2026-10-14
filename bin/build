@@ -7,12 +7,15 @@ cd "$ROOT/build"
 if [ -n "${HYPE_QMAKE:-}" ]; then
     build_qmake=$HYPE_QMAKE
 else
-    build_qmake=
-    for candidate in "$ROOT"/build/qt/*/gcc_64/bin/qmake6; do
-        if [ -x "$candidate" ]; then
-            build_qmake=$candidate
-        fi
-    done
+    # Qt's installer names this executable qmake; distro packages also use qmake6.
+    # Version sorting keeps 6.10 ahead of 6.9 when both toolchains are installed.
+    build_qmake=$(
+        for candidate in "$ROOT"/build/qt/*/gcc_64/bin/qmake "$ROOT"/build/qt/*/gcc_64/bin/qmake6; do
+            if [ -x "$candidate" ]; then
+                printf '%s\n' "$candidate"
+            fi
+        done | sort -V | tail -n 1
+    )
     if [ -z "$build_qmake" ]; then
         build_qmake=$(command -v qmake6 || true)
     fi
