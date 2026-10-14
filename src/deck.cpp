@@ -367,6 +367,7 @@ void Deck::selectAt(int position) {
     select(0);
 }
 int Deck::sourcePosition() const { return m_parsed.slides.value(m_selected).start; }
+int Deck::sourceEndPosition() const { return m_parsed.slides.value(m_selected).end; }
 void Deck::editSource(const QString &s) { apply(s, m_selected); }
 void Deck::editSlide(const QString &s) {
     const auto range = m_parsed.slides.value(m_selected);
