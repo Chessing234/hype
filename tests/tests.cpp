@@ -659,6 +659,13 @@ static void write(const QString &path, const QString &content) {
         QCOMPARE(pick(laptop, {dock, laptop, hdmi}), QStringList({"HDMI-A-1", "eDP-1"}));
         QCOMPARE(pick(hdmi, {hdmi, laptop}), QStringList({"HDMI-A-1", "eDP-1"}));
         QCOMPARE(pick(dock, {laptop, dock}), QStringList({"DP-4", "eDP-1"}));
+        QCOMPARE(pick(hdmi, {dock, hdmi, laptop}), QStringList({"HDMI-A-1", "eDP-1"}));
+        auto notes = presenterWindow->findChild<QObject *>("presenterNotes");
+        QVERIFY(notes);
+        deck.editSource("# One\n<!-- First note -->\n---\n# Two\n<!-- Second note -->\n");
+        QCOMPARE(notes->property("text").toString(), QString("First note"));
+        deck.select(1);
+        QCOMPARE(notes->property("text").toString(), QString("Second note"));
 
         // Closing with unsaved changes while presenting brings the editor back before asking.
         QVERIFY(deck.dirty());

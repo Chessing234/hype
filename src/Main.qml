@@ -123,7 +123,8 @@ ApplicationWindow {
             audience = other(s => s.name.toLowerCase().indexOf("hdmi") >= 0)
                 || other(s => !isBuiltInScreen(s)) || other(s => true) || current
         }
-        const notes = sameScreen(audience, current) ? other(s => true) : current
+        const notes = sameScreen(audience, current)
+            ? other(s => isBuiltInScreen(s)) || other(s => true) : current
         return { audience: audience, notes: notes }
     }
     function toggleVideo() {
