@@ -178,7 +178,9 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(QDir().mkpath(dark));
         QVERIFY(QDir().mkpath(light));
         write(dark + "/colors.toml", "background = '#101020'\nforeground = '#eeeeee'\naccent = '#7788ff'\n");
-        write(light + "/colors.toml", "background = '#ffffff'\nforeground = '#111111'\naccent = '#224488'\n");
+        write(light + "/colors.toml",
+              "background = '#ffffff'\nforeground = '#111111'\n"
+              "accent = #224488 # secondary-400\n");
         write(light + "/hyprland.lua", "hl.config({\n  decoration = {\n    rounding = 6,\n    -- rounding = 12,\n  },\n})\n");
         QVERIFY(QFile::link(dark, current + "/theme"));
         AppTheme theme(current);
