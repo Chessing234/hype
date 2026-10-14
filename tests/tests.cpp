@@ -1668,9 +1668,11 @@ static void write(const QString &path, const QString &content) {
         auto list = window->findChild<QQuickItem *>("thumbnails");
         QVERIFY(list);
         auto findFrame = [](auto &&self, QQuickItem *item, const QString &name) -> QQuickItem * {
-            if (item->objectName() == name) return item;
+            if (item->objectName() == name)
+                return item;
             for (auto child : item->childItems())
-                if (auto found = self(self, child, name)) return found;
+                if (auto found = self(self, child, name))
+                    return found;
             return nullptr;
         };
         auto currentFrame = findFrame(findFrame, list, "sidebarSlideFrame0");
@@ -1693,7 +1695,9 @@ static void write(const QString &path, const QString &content) {
         QTest::qWait(50);
         const QImage resizedWindow = window->grabWindow();
         QVERIFY(!resizedWindow.isNull());
-        const QPointF borderPoint = editorFrame->mapToScene(QPointF(editorFrame->width() / 2, 0.5)) * resizedWindow.devicePixelRatio();
+        const QPointF borderPoint =
+            editorFrame->mapToScene(QPointF(editorFrame->width() / 2, 0.5)) *
+            resizedWindow.devicePixelRatio();
         const QPoint borderPixel(qFloor(borderPoint.x()), qFloor(borderPoint.y()));
         QVERIFY(resizedWindow.rect().contains(borderPixel));
         QCOMPARE(resizedWindow.pixelColor(borderPixel).name(), focusedEditorBorder.name());

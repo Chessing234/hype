@@ -1248,78 +1248,78 @@ ApplicationWindow {
                 visible: !win.presenting; spacing: 0
                 SplitView.preferredHeight: 250; SplitView.minimumHeight: 140
                 SplitView.maximumHeight: workspace.height * 0.65
-            EditorToolbar { id: slideBar; Layout.fillWidth: true }
-            Rectangle {
-                objectName: "slideEditorFrame"
-                Layout.fillWidth: true; Layout.fillHeight: true
-                color: win.ui.background; radius: win.softRadius
-                readonly property color focusStroke: win.focusedEditor === "slide" && !win.popupOpen ? win.ui.inactiveSelection : win.ui.border
-                border.color: focusStroke; border.width: 1
-            ScrollView {
-                id: slideScroll; objectName: "slideScroll"
-                anchors.fill: parent; anchors.margins: 1; clip: true
-                WheelHandler {
-                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                    target: null
-                    onWheel: function(event) { win.scrollEditor(slideScroll.contentItem, event) }
-                }
-                TextArea {
-                    id: slideEditor; objectName: "slideEditor"; persistentSelection: true; textFormat: TextEdit.PlainText; color: win.ui.foreground; selectionColor: win.ui.selection; selectedTextColor: win.ui.selectionText; font.family: "JetBrains Mono"; font.pixelSize: 16
-                    onActiveFocusChanged: if (activeFocus) win.focusedEditor = "slide"
-                    wrapMode: TextEdit.Wrap; leftPadding: 24; topPadding: 16; placeholderText: "# Your headline"
-                    onTextChanged: {
-                        if (!win.syncingEditor && activeFocus) {
-                            const previousCount = deck.count
-                            win.editingSlide = true
-                            deck.editSlide(text)
-                            win.editingSlide = false
-                            if (deck.count !== previousCount) win.syncEditors()
+                EditorToolbar { id: slideBar; Layout.fillWidth: true }
+                Rectangle {
+                    objectName: "slideEditorFrame"
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    color: win.ui.background; radius: win.softRadius
+                    readonly property color focusStroke: win.focusedEditor === "slide" && !win.popupOpen ? win.ui.inactiveSelection : win.ui.border
+                    border.color: focusStroke; border.width: 1
+                    ScrollView {
+                        id: slideScroll; objectName: "slideScroll"
+                        anchors.fill: parent; anchors.margins: 1; clip: true
+                        WheelHandler {
+                            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                            target: null
+                            onWheel: function(event) { win.scrollEditor(slideScroll.contentItem, event) }
+                        }
+                        TextArea {
+                            id: slideEditor; objectName: "slideEditor"; persistentSelection: true; textFormat: TextEdit.PlainText; color: win.ui.foreground; selectionColor: win.ui.selection; selectedTextColor: win.ui.selectionText; font.family: "JetBrains Mono"; font.pixelSize: 16
+                            onActiveFocusChanged: if (activeFocus) win.focusedEditor = "slide"
+                            wrapMode: TextEdit.Wrap; leftPadding: 24; topPadding: 16; placeholderText: "# Your headline"
+                            onTextChanged: {
+                                if (!win.syncingEditor && activeFocus) {
+                                    const previousCount = deck.count
+                                    win.editingSlide = true
+                                    deck.editSlide(text)
+                                    win.editingSlide = false
+                                    if (deck.count !== previousCount) win.syncEditors()
+                                }
+                            }
+                            Keys.onPressed: function(event) { win.editorKey(slideEditor, slideScroll.contentItem, event) }
                         }
                     }
-                    Keys.onPressed: function(event) { win.editorKey(slideEditor, slideScroll.contentItem, event) }
                 }
-            }
-            }
             }
         }
         ColumnLayout {
             visible: win.markdown && !win.overview && !win.presenting; spacing: 0
             Layout.fillWidth: true; Layout.fillHeight: true
             Layout.margins: win.inset; Layout.leftMargin: 0
-        EditorToolbar { id: sourceBar; scope: "source."; textInset: sourceEditor.leftPadding; Layout.fillWidth: true }
-        Rectangle {
-            objectName: "sourceEditorFrame"
-            Layout.fillWidth: true; Layout.fillHeight: true
-            color: win.ui.background; radius: win.softRadius
-            readonly property color focusStroke: win.focusedEditor === "source" && !win.popupOpen ? win.ui.inactiveSelection : win.ui.border
-            border.color: focusStroke; border.width: 1
-        ScrollView {
-            id: sourceScroll; objectName: "sourceScroll"
-            anchors.fill: parent; anchors.margins: 1; clip: true
-            background: Rectangle { color: win.ui.background }
-            Flickable {
-                id: sourceFlick; objectName: "sourceFlick"
-                clip: true; boundsBehavior: Flickable.StopAtBounds
-                WheelHandler {
-                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                    target: null
-                    onWheel: function(event) { win.scrollEditor(sourceFlick, event) }
+            EditorToolbar { id: sourceBar; scope: "source."; textInset: sourceEditor.leftPadding; Layout.fillWidth: true }
+            Rectangle {
+                objectName: "sourceEditorFrame"
+                Layout.fillWidth: true; Layout.fillHeight: true
+                color: win.ui.background; radius: win.softRadius
+                readonly property color focusStroke: win.focusedEditor === "source" && !win.popupOpen ? win.ui.inactiveSelection : win.ui.border
+                border.color: focusStroke; border.width: 1
+                ScrollView {
+                    id: sourceScroll; objectName: "sourceScroll"
+                    anchors.fill: parent; anchors.margins: 1; clip: true
+                    background: Rectangle { color: win.ui.background }
+                    Flickable {
+                        id: sourceFlick; objectName: "sourceFlick"
+                        clip: true; boundsBehavior: Flickable.StopAtBounds
+                        WheelHandler {
+                            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                            target: null
+                            onWheel: function(event) { win.scrollEditor(sourceFlick, event) }
+                        }
+                        TextArea.flickable: TextArea {
+                            id: sourceEditor; objectName: "sourceEditor"
+                            onActiveFocusChanged: if (activeFocus) win.focusedEditor = "source"
+                            persistentSelection: true
+                            textFormat: TextEdit.PlainText
+                            color: win.ui.foreground; selectionColor: win.ui.selection; selectedTextColor: win.ui.selectionText
+                            font.family: "JetBrains Mono"; font.pixelSize: 18
+                            wrapMode: TextEdit.NoWrap; leftPadding: 32; topPadding: 30; bottomPadding: 30
+                            onTextChanged: { if (!win.syncingEditor && activeFocus && text !== deck.source) deck.editSource(text) }
+                            onCursorPositionChanged: { if (!win.syncingEditor && activeFocus) deck.selectAt(cursorPosition) }
+                            Keys.onPressed: function(event) { win.editorKey(sourceEditor, sourceFlick, event) }
+                        }
+                    }
                 }
-                TextArea.flickable: TextArea {
-                id: sourceEditor; objectName: "sourceEditor"
-                onActiveFocusChanged: if (activeFocus) win.focusedEditor = "source"
-                persistentSelection: true
-                textFormat: TextEdit.PlainText
-                color: win.ui.foreground; selectionColor: win.ui.selection; selectedTextColor: win.ui.selectionText
-                font.family: "JetBrains Mono"; font.pixelSize: 18
-                wrapMode: TextEdit.NoWrap; leftPadding: 32; topPadding: 30; bottomPadding: 30
-                onTextChanged: { if (!win.syncingEditor && activeFocus && text !== deck.source) deck.editSource(text) }
-                onCursorPositionChanged: { if (!win.syncingEditor && activeFocus) deck.selectAt(cursorPosition) }
-                Keys.onPressed: function(event) { win.editorKey(sourceEditor, sourceFlick, event) }
             }
-            }
-        }
-        }
         }
     }
     MediaPlayer { id: player; objectName: "player"; videoOutput: video; audioOutput: AudioOutput { muted: deck.media.muted } loops: deck.media.loop ? MediaPlayer.Infinite : 1; onErrorOccurred: function(error,message) { deck.setStatus(message) } }
