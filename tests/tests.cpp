@@ -641,8 +641,10 @@ static void write(const QString &path, const QString &content) {
         window->close();
     }
     void placeMenuPlacesImage() {
-        if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS")) QSKIP("Set HYPE_GUI_TESTS=1");
-        Deck deck; deck.editSource("# Headline\n\n![](logo.png)\n");
+        if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
+            QSKIP("Set HYPE_GUI_TESTS=1");
+        Deck deck;
+        deck.editSource("# Headline\n\n![](logo.png)\n");
         QQuickStyle::setStyle("Basic");
         qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
         qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
@@ -656,7 +658,8 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(place);
         QTRY_COMPARE(place->property("count").toInt(), 9);
         QQuickItem *bottomRight = nullptr;
-        QVERIFY(QMetaObject::invokeMethod(place, "itemAt", Q_RETURN_ARG(QQuickItem *, bottomRight), Q_ARG(int, 8)));
+        QVERIFY(QMetaObject::invokeMethod(place, "itemAt", Q_RETURN_ARG(QQuickItem *, bottomRight),
+                                          Q_ARG(int, 8)));
         QVERIFY(bottomRight);
         QCOMPARE(bottomRight->property("text").toString(), QString("Bottom right"));
         QVERIFY(QMetaObject::invokeMethod(bottomRight, "triggered"));
@@ -666,7 +669,8 @@ static void write(const QString &path, const QString &content) {
         auto size = window->findChild<QObject *>("sizeMenu");
         QVERIFY(size);
         QQuickItem *small = nullptr;
-        QVERIFY(QMetaObject::invokeMethod(size, "itemAt", Q_RETURN_ARG(QQuickItem *, small), Q_ARG(int, 0)));
+        QVERIFY(QMetaObject::invokeMethod(size, "itemAt", Q_RETURN_ARG(QQuickItem *, small),
+                                          Q_ARG(int, 0)));
         QTRY_VERIFY(small->property("checked").toBool());
         QVERIFY(size->property("enabled").toBool());
         auto white = window->findChild<QObject *>("whiteBackgroundItem");
@@ -951,7 +955,8 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(m.span);
     }
     void placedImageDirectives() {
-        auto m = parseMedia("# Headline\n\n![position=bottom-right size=10%](logo.png)", "/tmp/deck");
+        auto m =
+            parseMedia("# Headline\n\n![position=bottom-right size=10%](logo.png)", "/tmp/deck");
         QVERIFY(m.error.isEmpty());
         QVERIFY(m.placed());
         QCOMPARE(m.position, QString("bottom-right"));
@@ -980,13 +985,12 @@ static void write(const QString &path, const QString &content) {
                  Qt::AlignLeft | Qt::AlignVCenter);
         QCOMPARE(parseMedia("![position=top](logo.png)", "/tmp/deck").alignment,
                  Qt::AlignHCenter | Qt::AlignTop);
-        for (const QString &bad : {QString("position=middle"), QString("size=0%"),
-                                   QString("size=101%"), QString("size=10"),
-                                   QString("size=nan%"), QString("size=NaN%"),
-                                   QString("size=1e1%"), QString("size=%"), QString("size=-5%"),
-                                   QString("fit position=left"), QString("span size=10%"),
-                                   QString("position=left background=white"),
-                                   QString("position=left overlay=0.5")}) {
+        for (const QString &bad :
+             {QString("position=middle"), QString("size=0%"), QString("size=101%"),
+              QString("size=10"), QString("size=nan%"), QString("size=NaN%"), QString("size=1e1%"),
+              QString("size=%"), QString("size=-5%"), QString("fit position=left"),
+              QString("span size=10%"), QString("position=left background=white"),
+              QString("position=left overlay=0.5")}) {
             const auto invalid = parseMedia("![" + bad + "](logo.png)", "/tmp/deck");
             QVERIFY2(!invalid.error.isEmpty(), qPrintable(bad));
             QVERIFY2(qIsFinite(mediaRect(invalid).width()), qPrintable(bad));
@@ -1009,7 +1013,8 @@ static void write(const QString &path, const QString &content) {
             QCOMPARE(rect.size(), QSizeF(1824, 1026));
         }
         // A corner box keeps an equal gap on both of its sides once the margin shrinks.
-        const QRectF corner = mediaRect(parseMedia("![position=bottom-right size=95%](logo.png)", {}));
+        const QRectF corner =
+            mediaRect(parseMedia("![position=bottom-right size=95%](logo.png)", {}));
         QCOMPARE(1920 - corner.right(), 27.0);
         QCOMPARE(1080 - corner.bottom(), 27.0);
     }
@@ -1113,7 +1118,8 @@ static void write(const QString &path, const QString &content) {
         for (int y = 0; y < 1000; ++y) // The error banner fills the bottom 80 pixels.
             for (int x = 0; x < 1920; ++x)
                 if (!box.contains(x, y) && slide.pixelColor(x, y) != background)
-                    QFAIL(qPrintable(QString("Placeholder drawn outside its box at %1,%2").arg(x).arg(y)));
+                    QFAIL(qPrintable(
+                        QString("Placeholder drawn outside its box at %1,%2").arg(x).arg(y)));
     }
     void codeIsNotMedia() {
         QString source = "```markdown\n![](missing.png)\n<!-- Keep this code -->\n```";
@@ -3063,7 +3069,8 @@ static void write(const QString &path, const QString &content) {
         QCOMPARE(d.source(), placed);
     }
     void replacingPlacedMediaKeepsPlacement() {
-        const QString placed = "# Headline\n\n![position=bottom-right size=20% alt=\"Old\"](old.png)\n";
+        const QString placed =
+            "# Headline\n\n![position=bottom-right size=20% alt=\"Old\"](old.png)\n";
         auto m = parseMedia(withReplacedMedia(placed, "new.png"), {});
         QCOMPARE(m.file, QString("new.png"));
         QCOMPARE(m.position, QString("bottom-right"));
@@ -3074,7 +3081,8 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(parseMedia(withReplacedMedia(placed, "demo.mp4"), {}).error.isEmpty());
         QCOMPARE(withReplacedMedia("# Headline\n![fit](old.png)", "new.png"),
                  QString("# Headline\n![](<new.png>)"));
-        QCOMPARE(withReplacedMedia("# Headline", "new.png"), QString("# Headline\n![](<new.png>)\n"));
+        QCOMPARE(withReplacedMedia("# Headline", "new.png"),
+                 QString("# Headline\n![](<new.png>)\n"));
 
         // Importing a file onto a placed slide keeps it in the corner.
         QTemporaryDir tmp;
@@ -3088,7 +3096,7 @@ static void write(const QString &path, const QString &content) {
         m = parseMedia(deck.slideSource(), deck.baseDir());
         QCOMPARE(m.position, QString("bottom-right"));
 
-        // Pasted images for a placed slide are sized for its box, not the whole 4K slide.
+        // Keep enough detail to enlarge the image after pasting it into a small box.
         deck.editSlide(placed);
         QImage large(4800, 3600, QImage::Format_RGB32);
         large.fill(Qt::blue);
@@ -3099,7 +3107,14 @@ static void write(const QString &path, const QString &content) {
         m = parseMedia(deck.slideSource(), deck.baseDir());
         QCOMPARE(m.position, QString("bottom-right"));
         QCOMPARE(m.size, 20.0);
-        QCOMPARE(QImage(m.path).size(), QSize(576, 432)); // A 4:3 image in a 20% box at 4K (768x432).
+        QCOMPARE(QImage(m.path).size(), QSize(2880, 2160));
+        const QString pastedPath = m.path;
+        deck.setMediaSize(35);
+        deck.setMediaMode("fit");
+        m = parseMedia(deck.slideSource(), deck.baseDir());
+        QCOMPARE(m.path, pastedPath);
+        QVERIFY(!m.placed());
+        QCOMPARE(QImage(m.path).size(), QSize(2880, 2160));
     }
     void mediaImportCollisionAndPortability() {
         QTemporaryDir tmp;
@@ -4040,7 +4055,13 @@ static void write(const QString &path, const QString &content) {
         QFile file(tmp.path() + "/vector.pdf");
         QVERIFY(file.open(QIODevice::ReadOnly));
         QVERIFY(!file.readAll().contains("/Subtype /Image"));
-        // Under a headline it is still softened as a picture, from a sharp full-size copy.
+        // A placed logo has no softening even beside text, so it should remain vector too.
+        deck.editSource("# Growth\n\n![position=bottom-right size=20%](chart.svg)\n");
+        QVERIFY(deck.exportPdf(tmp.path() + "/placed.pdf"));
+        QFile placed(tmp.path() + "/placed.pdf");
+        QVERIFY(placed.open(QIODevice::ReadOnly));
+        QVERIFY(!placed.readAll().contains("/Subtype /Image"));
+        // Under an ordinary headline it is still softened, from a sharp full-size copy.
         deck.editSource("![fit](chart.svg)\n\n# Growth\n");
         QVERIFY(deck.exportPdf(tmp.path() + "/softened.pdf"));
         QFile softened(tmp.path() + "/softened.pdf");

@@ -1123,9 +1123,9 @@ bool Deck::pasteMedia() {
     });
     // Clipboard access stays on the UI thread; decoding, scaling and both lossless
     // encoders work on an independent snapshot without touching the document.
-    // A placed image only needs enough pixels for its box on a 4K slide.
-    const QSize canvas = media.placed() ? (mediaRect(media).size() * 2).toSize() : QSize(3840, 2160);
-    watcher->setFuture(QtConcurrent::run([pending = m_paste, image, span = media.span, canvas]() mutable -> Result {
+    // Keep enough detail if the image is enlarged or switched back to Fit later.
+    watcher->setFuture(QtConcurrent::run([pending = m_paste, image, span = media.span]() mutable -> Result {
+        const QSize canvas(3840, 2160);
         QSize original;
         if (!pending.source.isEmpty()) {
             QImageReader reader(pending.source);

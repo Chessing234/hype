@@ -99,15 +99,20 @@ static QString withoutComments(QString source) {
     return source;
 }
 static bool isVideoFile(const QString &file) {
-    return QStringList{"mp4", "m4v", "mov", "webm", "mkv"}.contains(QFileInfo(file).suffix().toLower());
+    return QStringList{"mp4", "m4v", "mov", "webm", "mkv"}.contains(
+        QFileInfo(file).suffix().toLower());
 }
 // The one list of placed-image positions and where each pins its image.
 static const QList<std::pair<QString, Qt::Alignment>> &placements() {
     static const QList<std::pair<QString, Qt::Alignment>> list{
-        {"top-left", Qt::AlignLeft | Qt::AlignTop},     {"top", Qt::AlignHCenter | Qt::AlignTop},
-        {"top-right", Qt::AlignRight | Qt::AlignTop},   {"left", Qt::AlignLeft | Qt::AlignVCenter},
-        {"center", Qt::AlignCenter},                    {"right", Qt::AlignRight | Qt::AlignVCenter},
-        {"bottom-left", Qt::AlignLeft | Qt::AlignBottom}, {"bottom", Qt::AlignHCenter | Qt::AlignBottom},
+        {"top-left", Qt::AlignLeft | Qt::AlignTop},
+        {"top", Qt::AlignHCenter | Qt::AlignTop},
+        {"top-right", Qt::AlignRight | Qt::AlignTop},
+        {"left", Qt::AlignLeft | Qt::AlignVCenter},
+        {"center", Qt::AlignCenter},
+        {"right", Qt::AlignRight | Qt::AlignVCenter},
+        {"bottom-left", Qt::AlignLeft | Qt::AlignBottom},
+        {"bottom", Qt::AlignHCenter | Qt::AlignBottom},
         {"bottom-right", Qt::AlignRight | Qt::AlignBottom}};
     return list;
 }
@@ -146,9 +151,10 @@ QString withMedia(const QString &source, const QString &reference) {
 QString withReplacedMedia(const QString &source, const QString &file) {
     // A new logo keeps the old one's corner and size; other layouts start fresh.
     const auto current = parseMedia(source, {});
-    const QString flags = current.placed() && !isVideoFile(file)
-        ? QString("position=%1 size=%2%").arg(current.position, QString::number(current.size))
-        : QString();
+    const QString flags =
+        current.placed() && !isVideoFile(file)
+            ? QString("position=%1 size=%2%").arg(current.position, QString::number(current.size))
+            : QString();
     return withMedia(source, "![" + flags + "](<" + file + ">)");
 }
 QString withMediaDirectives(const QString &source, const QStringList &remove,
@@ -837,7 +843,7 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
         const QSize pixels = p->deviceTransform().mapRect(rect).size().toSize();
         // An SVG with nothing over it is drawn as vectors, sharp at any size and in PDF. Its
         // small raster only gives its shape and edge colors for the background.
-        const bool vector = !media.video && text.isEmpty() &&
+        const bool vector = !media.video && (text.isEmpty() || media.placed()) &&
                             QStringList{"svg", "svgz"}.contains(QFileInfo(path).suffix().toLower());
         QImage image = loadedImage(path, vector ? QSize(480, 270) : pixels, media.span);
         // Video backgrounds use the first frame, even with a custom poster.
@@ -849,8 +855,7 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
                 p->drawImage(QRectF(0, 0, 1920, 1080), blurredBackground(backdrop));
         }
         if ((!media.video || !media.background.isEmpty()) && !media.span && !media.placed() &&
-            media.background != "theme" &&
-            (bg.isEmpty() || !media.background.isEmpty())) {
+            media.background != "theme" && (bg.isEmpty() || !media.background.isEmpty())) {
             QColor color(media.background);
             if ((media.background.isEmpty() || media.background == "auto") && !backdrop.isNull()) {
                 // Quantized edge votes ignore transparent pixels and tolerate compression noise.
