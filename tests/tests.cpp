@@ -630,7 +630,8 @@ static void write(const QString &path, const QString &content) {
             QCOMPARE(source.mid(s.start, s.end - s.start), s.source);
         Deck d;
         d.editSource(source);
-        for (int position : {0, int(source.indexOf("title")), parsed.slides[0].start - 1, parsed.slides[0].start}) {
+        for (int position : {0, int(source.indexOf("title")), parsed.slides[0].start - 1,
+                             parsed.slides[0].start}) {
             d.select(2);
             d.selectAt(position);
             QCOMPARE(d.selected(), 0);
@@ -2150,7 +2151,8 @@ static void write(const QString &path, const QString &content) {
         QTest::keyClick(window, Qt::Key_Home, Qt::ControlModifier);
         QCOMPARE(source->property("cursorPosition").toInt(), 0);
         QCOMPARE(d.selected(), 0);
-        QTRY_VERIFY(qAbs(list->property("contentY").toDouble() - list->property("originY").toDouble()) < 1);
+        QTRY_VERIFY(
+            qAbs(list->property("contentY").toDouble() - list->property("originY").toDouble()) < 1);
         QVERIFY(source->hasActiveFocus());
         window->setProperty("allowClose", true);
         window->close();
