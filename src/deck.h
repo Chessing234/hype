@@ -49,6 +49,7 @@ class Deck : public QAbstractListModel {
     Q_PROPERTY(QStringList fontNames READ fontNames CONSTANT)
     Q_PROPERTY(QString fontName READ fontName NOTIFY fontChanged)
     Q_PROPERTY(QStringList themeNames READ themeNames CONSTANT)
+    Q_PROPERTY(QStringList mediaPositions READ mediaPositions CONSTANT)
     Q_PROPERTY(QString themeName READ themeName NOTIFY changed)
     Q_PROPERTY(QColor background READ background NOTIFY changed)
     Q_PROPERTY(QColor foreground READ foreground NOTIFY changed)
@@ -95,6 +96,7 @@ class Deck : public QAbstractListModel {
     QColor accent() const;
     QVariantMap palette() const;
     QVariantMap media() const;
+    QStringList mediaPositions() const;
     QString baseDir() const;
     QString dialogDirectory() const;
     QString slide(int index) const;
@@ -116,6 +118,7 @@ class Deck : public QAbstractListModel {
     Q_INVOKABLE void dropSelection(int slot);
     Q_INVOKABLE void selectAt(int position);
     Q_INVOKABLE int sourcePosition() const;
+    Q_INVOKABLE int sourceEndPosition() const;
     Q_INVOKABLE void editSource(const QString &value);
     Q_INVOKABLE void editSlide(const QString &value);
     Q_INVOKABLE void moveSlide(int from, int to);
@@ -139,6 +142,8 @@ class Deck : public QAbstractListModel {
     Q_INVOKABLE void matchImageBackground(bool enabled);
     Q_INVOKABLE void setMediaBackground(const QString &mode);
     Q_INVOKABLE void setMediaMode(const QString &mode);
+    Q_INVOKABLE void setMediaPosition(const QString &position);
+    Q_INVOKABLE void setMediaSize(double percent);
     Q_INVOKABLE void setStatus(const QString &status);
   signals:
     void changed(); // Document content, path, saved state, or media files; always followed by selectionChanged.

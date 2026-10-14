@@ -93,6 +93,28 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write(content.toUtf8());
     }
+    // Builds original/ with nested, hidden, unreferenced, and poster-cache media.
+    static QString nestedMediaDeck(const QTemporaryDir &tmp) {
+        const QString original = tmp.filePath("original");
+        for (const char *directory : {"images/nested", "images/posters", "images/.private",
+                                      "images/unused", "videos/clips"})
+            QDir().mkpath(original + "/" + directory);
+        QImage image(8, 8, QImage::Format_RGB32);
+        image.fill(Qt::red);
+        image.save(original + "/images/nested/photo.png");
+        image.fill(Qt::blue);
+        image.save(original + "/images/posters/.cover.png");
+        image.fill(Qt::yellow);
+        image.save(original + "/images/.private/logo.png");
+        write(original + "/videos/clips/talk.mp4", "video");
+        write(original + "/images/unused/extra.txt", "extra");
+        write(original + "/images/.hype-poster-0123456789abcdef.jpg", "cache");
+        write(original + "/talk.md",
+              "![](images/nested/photo.png)\n\n---\n\n"
+              "![poster=\"images/posters/.cover.png\"](videos/clips/talk.mp4)\n\n---\n\n"
+              "![](images/.private/logo.png)\n\n---\n\n![](images/gone.png)\n");
+        return original;
+    }
   private slots:
     void initTestCase() {
         QVERIFY(settingsDirectory.isValid());
@@ -681,6 +703,51 @@ static void write(const QString &path, const QString &content) {
         window->setProperty("allowClose", true);
         window->close();
     }
+    void placeMenuPlacesImage() {
+        if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
+            QSKIP("Set HYPE_GUI_TESTS=1");
+        Deck deck;
+        deck.editSource("# Headline\n\n![](logo.png)\n");
+        QQuickStyle::setStyle("Basic");
+        qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+        qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("deck", &deck);
+        engine.addImageProvider("slides", new Thumbnails(&deck));
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        auto place = window->findChild<QObject *>("placeMenu");
+        QVERIFY(place);
+        QTRY_COMPARE(place->property("count").toInt(), 9);
+        QQuickItem *bottomRight = nullptr;
+        QVERIFY(QMetaObject::invokeMethod(place, "itemAt", Q_RETURN_ARG(QQuickItem *, bottomRight),
+                                          Q_ARG(int, 8)));
+        QVERIFY(bottomRight);
+        QCOMPARE(bottomRight->property("text").toString(), QString("Bottom right"));
+        QVERIFY(QMetaObject::invokeMethod(bottomRight, "triggered"));
+        QCOMPARE(parseMedia(deck.slideSource(), {}).position, QString("bottom-right"));
+        QTRY_VERIFY(bottomRight->property("checked").toBool());
+        // Small, the default size, is checked; backgrounds are off while placed.
+        auto size = window->findChild<QObject *>("sizeMenu");
+        QVERIFY(size);
+        QQuickItem *small = nullptr;
+        QVERIFY(QMetaObject::invokeMethod(size, "itemAt", Q_RETURN_ARG(QQuickItem *, small),
+                                          Q_ARG(int, 0)));
+        QTRY_VERIFY(small->property("checked").toBool());
+        QVERIFY(size->property("enabled").toBool());
+        auto white = window->findChild<QObject *>("whiteBackgroundItem");
+        QVERIFY(white);
+        QTRY_VERIFY(!white->property("enabled").toBool());
+        deck.setMediaMode("fit");
+        QTRY_VERIFY(white->property("enabled").toBool());
+        QTRY_VERIFY(!size->property("enabled").toBool());
+        // Videos cannot be placed.
+        deck.editSlide("![](demo.mp4)");
+        QTRY_VERIFY(!place->property("enabled").toBool());
+        window->setProperty("allowClose", true);
+        window->close();
+    }
     void fencesAndFrontMatter() {
         QString source = "---\ntitle: Test\n---\n\n# "
                          "One\n\n---\n\n````ruby\n---\n```\n````\n\n---\n\n~~~sh\n---\n~~~\n";
@@ -691,6 +758,27 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(parsed.slides[1].source.contains("---"));
         for (auto &s : parsed.slides)
             QCOMPARE(source.mid(s.start, s.end - s.start), s.source);
+        Deck d;
+        d.editSource(source);
+        for (int position : {0, int(source.indexOf("title")), parsed.slides[0].start - 1,
+                             parsed.slides[0].start}) {
+            d.select(2);
+            d.selectAt(position);
+            QCOMPARE(d.selected(), 0);
+        }
+        d.selectAt(parsed.slides[1].start);
+        QCOMPARE(d.selected(), 1);
+    }
+    void newDeckTitleFollowsFileName() {
+        QTemporaryDir tmp;
+        Deck d;
+        QCOMPARE(d.title(), "Untitled");
+        QVERIFY(d.savePath(tmp.filePath("talk.md")));
+        QCOMPARE(d.title(), "talk");
+        d.newDeck();
+        QCOMPARE(d.title(), "Untitled");
+        QVERIFY(d.savePath(tmp.filePath("second_talk.md")));
+        QCOMPARE(d.title(), "second_talk");
     }
     void emptyBoundariesAndUnicode() {
         auto p = parseDeck("# Æble 🍎\n---\n\n---\n");
@@ -851,6 +939,64 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(f.open(QIODevice::ReadOnly));
         QCOMPARE(f.readAll(), QByteArray("# External\n"));
     }
+    void inlineSvg() {
+        const QString chart = "# Growth\n\n```svg\n<svg viewBox=\"0 0 200 100\">\n"
+                              "  <rect width=\"200\" height=\"100\" fill=\"var(--accent)\"/>\n"
+                              "  <text x=\"10\" y=\"50\">Requests per second</text>\n</svg>\n```\n";
+        const auto media = parseMedia(chart, "/tmp");
+        QVERIFY(media.svg.startsWith("<svg viewBox"));
+        QCOMPARE(media.text.trimmed(), QString("# Growth"));
+        QVERIFY(media.file.isEmpty());
+        QVERIFY(slideProblems(chart, "/tmp").isEmpty());
+        QVERIFY(!slideProblems("```svg\n```\n", "/tmp").isEmpty());
+        QVERIFY(slideProblems(chart + chart, "/tmp").join(' ').contains("one media item"));
+        const QString spacedAttributes =
+            "```svg\n<svg xmlns = \"http://www.w3.org/2000/svg\" "
+            "viewBox = \"0 0 1 1\" fill = \"red\" color = \"red\" font-family = \"sans\"/>\n```\n";
+        QVERIFY(slideProblems(spacedAttributes, "/tmp").isEmpty());
+        // Mistakes name their line within the block, or what to use instead.
+        QVERIFY(slideProblems("```svg\n<svg viewBox=\"0 0 1 1\">\n<rect>\n</svg>\n```", "/tmp")
+                    .value(0)
+                    .startsWith("SVG line 3: "));
+        QVERIFY(slideProblems(
+                    "```svg\n<svg viewBox=\"0 0 1 1\"><rect fill=\"var(--purple)\"/></svg>\n```",
+                    "/tmp")
+                    .value(0)
+                    .startsWith("Unknown theme color --purple; use --background"));
+        QVERIFY(
+            slideProblems("```svg\n<svg><rect/></svg>\n```", "/tmp").value(0).contains("viewBox"));
+        QVERIFY(slideProblems("![](photo.jpg)\n\n```svg\n<svg viewBox=\"0 0 1 1\"/>\n```", "/tmp")
+                    .join(' ')
+                    .contains("one media item"));
+        // Drawn in the theme's colors, below the headline's band.
+        QVariantMap palette{{"background", "#1a1b26"},
+                            {"foreground", "#c0caf5"},
+                            {"accent", "#7aa2f7"},
+                            {"font", "JetBrains Mono"}};
+        auto drawn = [&] {
+            QImage image(960, 540, QImage::Format_ARGB32_Premultiplied);
+            QPainter painter(&image);
+            paintSlide(&painter, image.rect(), chart, "/tmp", palette);
+            return image;
+        };
+        QImage image = drawn();
+        QCOMPARE(image.pixelColor(480, 300), QColor("#7aa2f7"));
+        QCOMPARE(image.pixelColor(480, 100), QColor("#1a1b26"));
+        palette["accent"] = "#e0af68";
+        QCOMPARE(drawn().pixelColor(480, 300), QColor("#e0af68"));
+        // In a PDF it stays vector: text, and no embedded picture.
+        QTemporaryDir tmp;
+        write(tmp.path() + "/talk.md", chart);
+        Deck deck;
+        QVERIFY(deck.loadPath(tmp.path() + "/talk.md"));
+        QVERIFY(deck.exportPdf(tmp.path() + "/talk.pdf"));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(tmp.path() + "/talk.pdf"), QPdfDocument::Error::None);
+        QVERIFY(pdf.getAllText(0).text().contains("Requests per second"));
+        QFile file(tmp.path() + "/talk.pdf");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QVERIFY(!file.readAll().contains("/Subtype /Image"));
+    }
     void mediaDefaultsAndDirectives() {
         auto m = parseMedia("![](<City at night.JPG>)\n\n# Hello", "/tmp/deck");
         QCOMPARE(m.path, QString("/tmp/deck/images/City at night.JPG"));
@@ -870,6 +1016,173 @@ static void write(const QString &path, const QString &content) {
         m = parseMedia("![left](photo.jpg)\n\n# Text", "/tmp/deck");
         QVERIFY(m.error.isEmpty());
         QVERIFY(m.span);
+    }
+    void placedImageDirectives() {
+        auto m =
+            parseMedia("# Headline\n\n![position=bottom-right size=10%](logo.png)", "/tmp/deck");
+        QVERIFY(m.error.isEmpty());
+        QVERIFY(m.placed());
+        QCOMPARE(m.position, QString("bottom-right"));
+        QCOMPARE(m.size, 10.0);
+        QVERIFY(!m.span); // A headline no longer makes the image span.
+        QCOMPARE(m.overlay, 0.0);
+        QCOMPARE(mediaRect(m), QRectF(1920 - 60 - 192, 1080 - 60 - 108, 192, 108));
+        m = parseMedia("![position=top-left size=50%](logo.png)", "/tmp/deck");
+        QCOMPARE(mediaRect(m), QRectF(60, 60, 960, 540));
+        m = parseMedia("![position=top](logo.png)", "/tmp/deck");
+        QVERIFY(m.error.isEmpty());
+        QCOMPARE(m.size, 10.0);
+        QCOMPARE(mediaRect(m), QRectF((1920 - 192) / 2.0, 60, 192, 108));
+        m = parseMedia("![size=20%](logo.png)", "/tmp/deck");
+        QVERIFY(m.error.isEmpty());
+        QCOMPARE(m.position, QString("center"));
+        QCOMPARE(mediaRect(m), QRectF((1920 - 384) / 2.0, (1080 - 216) / 2.0, 384, 216));
+        QCOMPARE(parseMedia("![size=12.5%](logo.png)", "/tmp/deck").size, 12.5);
+        QVERIFY(!parseMedia("![](logo.png)", "/tmp/deck").placed());
+        // Every position maps to one alignment, shared by painting and the preview.
+        QCOMPARE(mediaPositions().size(), 9);
+        QCOMPARE(parseMedia("![](logo.png)", "/tmp/deck").alignment, Qt::AlignCenter);
+        QCOMPARE(parseMedia("![position=bottom-right](logo.png)", "/tmp/deck").alignment,
+                 Qt::AlignRight | Qt::AlignBottom);
+        QCOMPARE(parseMedia("![position=left](logo.png)", "/tmp/deck").alignment,
+                 Qt::AlignLeft | Qt::AlignVCenter);
+        QCOMPARE(parseMedia("![position=top](logo.png)", "/tmp/deck").alignment,
+                 Qt::AlignHCenter | Qt::AlignTop);
+        for (const QString &bad :
+             {QString("position=middle"), QString("size=0%"), QString("size=101%"),
+              QString("size=10"), QString("size=nan%"), QString("size=NaN%"), QString("size=1e1%"),
+              QString("size=%"), QString("size=-5%"), QString("fit position=left"),
+              QString("span size=10%"), QString("position=left background=white"),
+              QString("position=left overlay=0.5")}) {
+            const auto invalid = parseMedia("![" + bad + "](logo.png)", "/tmp/deck");
+            QVERIFY2(!invalid.error.isEmpty(), qPrintable(bad));
+            QVERIFY2(qIsFinite(mediaRect(invalid).width()), qPrintable(bad));
+        }
+        QVERIFY(!parseMedia("![position=left](demo.mp4)", "/tmp/deck").error.isEmpty());
+        // Errors never echo the author's value, which may hold markup.
+        QCOMPARE(parseMedia("![position=\"<b>x</b>\"](logo.png)", "/tmp/deck").error,
+                 QString("Unknown position"));
+    }
+    void largePlacedImagesStayOnTheSlide() {
+        const QRectF slide(0, 0, 1920, 1080);
+        // The margin shrinks to nothing as the box reaches the whole slide.
+        for (const QString &position : mediaPositions())
+            QCOMPARE(mediaRect(parseMedia("![position=" + position + " size=100%](logo.png)", {})),
+                     slide);
+        for (const QString &position : mediaPositions()) {
+            const QRectF rect =
+                mediaRect(parseMedia("![position=" + position + " size=95%](logo.png)", {}));
+            QVERIFY2(slide.contains(rect), qPrintable(position));
+            QCOMPARE(rect.size(), QSizeF(1824, 1026));
+        }
+        // A corner box keeps an equal gap on both of its sides once the margin shrinks.
+        const QRectF corner =
+            mediaRect(parseMedia("![position=bottom-right size=95%](logo.png)", {}));
+        QCOMPARE(1920 - corner.right(), 27.0);
+        QCOMPARE(1080 - corner.bottom(), 27.0);
+    }
+    void placedImageLeavesTextLayoutAlone() {
+        QTemporaryDir tmp;
+        QVERIFY(QDir().mkpath(tmp.path() + "/images"));
+        QImage logo(40, 20, QImage::Format_RGB32);
+        logo.fill(Qt::red);
+        QVERIFY(logo.save(tmp.path() + "/images/logo.png"));
+        Deck deck;
+        QVERIFY(deck.savePath(tmp.path() + "/talk.md"));
+        const QString text = "# Quarterly results\n\n- Revenue up\n- Churn down\n";
+        const QString placed = text + "\n![position=bottom-right size=10%](logo.png)\n";
+        auto render = [&](const QString &source) {
+            QImage image(1920, 1080, QImage::Format_ARGB32_Premultiplied);
+            QPainter p(&image);
+            paintSlide(&p, image.rect(), source, deck.baseDir(), deck.palette());
+            return image;
+        };
+        const QImage plain = render(text), withLogo = render(placed);
+        const QRect box = mediaRect(parseMedia(placed, deck.baseDir())).toAlignedRect();
+        int differences = 0;
+        for (int y = 0; y < 1080; ++y)
+            for (int x = 0; x < 1920; ++x)
+                if (!box.contains(x, y) && plain.pixel(x, y) != withLogo.pixel(x, y))
+                    ++differences;
+        // Same font size, position, and colors as the slide without an image.
+        QCOMPARE(differences, 0);
+    }
+    void placedImageKeepsSlideColors() {
+        QTemporaryDir tmp;
+        QVERIFY(QDir().mkpath(tmp.path() + "/images"));
+        QImage logo(40, 20, QImage::Format_RGB32);
+        logo.fill(Qt::red);
+        QVERIFY(logo.save(tmp.path() + "/images/logo.png"));
+        Deck deck;
+        QVERIFY(deck.savePath(tmp.path() + "/talk.md"));
+        const QString source = "<!-- hype: background=\"#204060\" foreground=\"#f0e0a0\" -->\n"
+                               "# Headline\n\n![position=bottom-right size=10%](logo.png)";
+        QImage slide(1920, 1080, QImage::Format_ARGB32_Premultiplied);
+        QPainter p(&slide);
+        paintSlide(&p, slide.rect(), source, deck.baseDir(), deck.palette());
+        p.end();
+        QCOMPARE(slide.pixelColor(10, 10), QColor("#204060"));
+        QCOMPARE(slide.pixelColor(1850, 1010), QColor(Qt::red));
+        // The headline uses the slide's own text color, not the white used over pictures.
+        bool slideInk = false, white = false;
+        for (int y = 0; y < 1080; y += 2)
+            for (int x = 0; x < 1920; x += 2) {
+                const QColor c = slide.pixelColor(x, y);
+                slideInk = slideInk || c == QColor("#f0e0a0");
+                white = white || (c.red() > 250 && c.green() > 250 && c.blue() > 250);
+            }
+        QVERIFY(slideInk);
+        QVERIFY(!white);
+        // With only a text color set, the theme background stays: no fill matching the red logo.
+        slide.fill(Qt::transparent);
+        p.begin(&slide);
+        paintSlide(&p, slide.rect(),
+                   "<!-- hype: foreground=\"#f0e0a0\" -->\n# Headline\n\n"
+                   "![position=bottom-right size=10%](logo.png)",
+                   deck.baseDir(), deck.palette());
+        p.end();
+        QCOMPARE(slide.pixelColor(10, 10), QColor(deck.palette()["background"].toString()));
+    }
+    void placedImageKeepsThemeLayout() {
+        QTemporaryDir tmp;
+        QVERIFY(QDir().mkpath(tmp.path() + "/images"));
+        QImage logo(40, 20, QImage::Format_RGB32);
+        logo.fill(Qt::red);
+        QVERIFY(logo.save(tmp.path() + "/images/logo.png"));
+        Deck deck;
+        QVERIFY(deck.savePath(tmp.path() + "/talk.md"));
+        const QString source = "# Headline\n\n![position=bottom-right size=10%](logo.png)";
+        QImage slide(1920, 1080, QImage::Format_ARGB32_Premultiplied);
+        QPainter p(&slide);
+        paintSlide(&p, slide.rect(), source, deck.baseDir(), deck.palette());
+        p.end();
+        // A 2:1 logo in a 192x108 box is 192x96, pinned to the bottom-right margin.
+        QCOMPARE(slide.pixelColor(1850, 1010), QColor(Qt::red));
+        QCOMPARE(slide.pixelColor(1675, 930), QColor(Qt::red));
+        const QColor background(deck.palette()["background"].toString());
+        QCOMPARE(slide.pixelColor(1850, 915), background);
+        QCOMPARE(slide.pixelColor(10, 10), background); // No overlay or edge-color fill.
+        // The PDF places the logo in the same corner.
+        deck.editSource(source);
+        QVERIFY(deck.exportPdf(tmp.filePath("talk.pdf")));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(tmp.filePath("talk.pdf")), QPdfDocument::Error::None);
+        const QImage page = pdf.render(0, QSize(1920, 1080));
+        const QColor corner = page.pixelColor(1850, 1010), outside = page.pixelColor(1850, 900);
+        QVERIFY2(corner.red() > 200 && corner.green() < 60, qPrintable(corner.name()));
+        QVERIFY2(outside.red() < 100, qPrintable(outside.name()));
+        // A missing placed image keeps its placeholder inside the small box.
+        slide.fill(Qt::transparent);
+        p.begin(&slide);
+        paintSlide(&p, slide.rect(), "![position=bottom-right size=10%](gone.png)", deck.baseDir(),
+                   deck.palette());
+        p.end();
+        const QRectF box = mediaRect(parseMedia("![position=bottom-right size=10%](gone.png)", {}));
+        for (int y = 0; y < 1000; ++y) // The error banner fills the bottom 80 pixels.
+            for (int x = 0; x < 1920; ++x)
+                if (!box.contains(x, y) && slide.pixelColor(x, y) != background)
+                    QFAIL(qPrintable(
+                        QString("Placeholder drawn outside its box at %1,%2").arg(x).arg(y)));
     }
     void codeIsNotMedia() {
         QString source = "```markdown\n![](missing.png)\n<!-- Keep this code -->\n```";
@@ -1374,6 +1687,13 @@ static void write(const QString &path, const QString &content) {
         const int paused = animation->property("currentFrame").toInt();
         QTest::qWait(450);
         QCOMPARE(animation->property("currentFrame").toInt(), paused);
+        // A placed animation hugs its corner of the small box, like the rendered slide.
+        QCOMPARE(animation->property("horizontalAlignment").toInt(), int(Qt::AlignHCenter));
+        d.editSlide("# Headline\n\n![position=bottom-right size=20%](demo.webp)");
+        QTRY_COMPARE(animation->property("horizontalAlignment").toInt(), int(Qt::AlignRight));
+        QCOMPARE(animation->property("verticalAlignment").toInt(), int(Qt::AlignBottom));
+        d.editSlide("![fit background=#123456](demo.webp)");
+        QTRY_COMPARE(animation->property("horizontalAlignment").toInt(), int(Qt::AlignHCenter));
         window->setProperty("markdown", true);
         QTRY_VERIFY(!loader->property("active").toBool());
         QTRY_VERIFY(!loader->property("item").value<QObject *>());
@@ -1631,6 +1951,30 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(d.slide(columns).contains("# S1\n") || d.slide(columns).trimmed() == "# S1");
         d.undo();
         QVERIFY(d.slide(0).contains("# S1"));
+        // Movement by five counts slides even in the grid; a range stays together.
+        d.select(2);
+        d.extendSelection(3);
+        QTest::keyClick(window, Qt::Key_PageDown, Qt::ControlModifier);
+        QCOMPARE(d.selectionFirst(), 7);
+        QCOMPARE(d.selectionLast(), 8);
+        QCOMPARE(d.slide(7).trimmed(), "# S3");
+        QCOMPARE(d.slide(8).trimmed(), "# S4");
+        QTest::keyClick(window, Qt::Key_PageUp, Qt::ControlModifier);
+        QCOMPARE(d.selectionFirst(), 2);
+        QCOMPARE(d.selectionLast(), 3);
+        QTest::keyClick(window, Qt::Key_Home, Qt::ControlModifier);
+        QCOMPARE(d.selectionFirst(), 0);
+        QCOMPARE(d.selectionLast(), 1);
+        QTest::keyClick(window, Qt::Key_End, Qt::ControlModifier);
+        QCOMPARE(d.selectionFirst(), 10);
+        QCOMPARE(d.selectionLast(), 11);
+        QTest::keyClick(window, Qt::Key_PageDown, Qt::ControlModifier);
+        QCOMPARE(d.selectionFirst(), 10);
+        QCOMPARE(d.selectionLast(), 11);
+        for (int i = 0; i < 4; ++i)
+            d.undo();
+        QCOMPARE(d.slide(2).trimmed(), "# S3");
+        QCOMPARE(d.slide(3).trimmed(), "# S4");
         // Dragging a slide onto the left half of another drops it before that slide.
         d.select(0);
         const QPoint from = center(0), to = center(2) - QPoint(int(cellWidth * 0.3), 0);
@@ -1730,6 +2074,51 @@ static void write(const QString &path, const QString &content) {
         QTest::qWait(300);
         auto list = window->findChild<QQuickItem *>("thumbnails");
         QVERIFY(list);
+        auto findFrame = [](auto &&self, QQuickItem *item, const QString &name) -> QQuickItem * {
+            if (item->objectName() == name)
+                return item;
+            for (auto child : item->childItems())
+                if (auto found = self(self, child, name))
+                    return found;
+            return nullptr;
+        };
+        auto currentFrame = findFrame(findFrame, list, "sidebarSlideFrame0");
+        auto passiveFrame = findFrame(findFrame, list, "sidebarSlideFrame1");
+        auto slideEditor = window->findChild<QQuickItem *>("slideEditor");
+        auto editorFrame = window->findChild<QQuickItem *>("slideEditorFrame");
+        QVERIFY(currentFrame && passiveFrame && slideEditor && editorFrame);
+        list->forceActiveFocus();
+        QTRY_VERIFY(list->hasActiveFocus());
+        const QColor idleEditorBorder = editorFrame->property("focusStroke").value<QColor>();
+        const QColor activeBorder = currentFrame->property("selectionStroke").value<QColor>();
+        QCOMPARE(currentFrame->property("selectionStrokeWidth").toInt(), 3);
+        slideEditor->forceActiveFocus();
+        QTRY_VERIFY(slideEditor->hasActiveFocus());
+        QCOMPARE(window->activeFocusItem(), slideEditor);
+        const QColor focusedEditorBorder = editorFrame->property("focusStroke").value<QColor>();
+        QVERIFY(focusedEditorBorder != idleEditorBorder);
+        const QSize originalWindowSize = window->size();
+        window->resize(originalWindowSize.width() - 80, originalWindowSize.height() - 40);
+        QTest::qWait(50);
+        const QImage resizedWindow = window->grabWindow();
+        QVERIFY(!resizedWindow.isNull());
+        const QPointF borderPoint =
+            editorFrame->mapToScene(QPointF(editorFrame->width() / 2, 0.5)) *
+            resizedWindow.devicePixelRatio();
+        const QPoint borderPixel(qFloor(borderPoint.x()), qFloor(borderPoint.y()));
+        QVERIFY(resizedWindow.rect().contains(borderPixel));
+        QCOMPARE(resizedWindow.pixelColor(borderPixel).name(), focusedEditorBorder.name());
+        window->resize(originalWindowSize);
+        const QColor editingBorder = currentFrame->property("selectionStroke").value<QColor>();
+        QVERIFY(editingBorder != activeBorder);
+        QVERIFY(editingBorder != passiveFrame->property("selectionStroke").value<QColor>());
+        QCOMPARE(currentFrame->property("selectionStrokeWidth").toInt(), 2);
+        QCOMPARE(passiveFrame->property("selectionStrokeWidth").toInt(), 1);
+        QCOMPARE(d.selected(), 0);
+        list->forceActiveFocus();
+        QTRY_VERIFY(list->hasActiveFocus());
+        QCOMPARE(editorFrame->property("focusStroke").value<QColor>(), idleEditorBorder);
+        QCOMPARE(currentFrame->property("selectionStroke").value<QColor>(), activeBorder);
         const double slideStep = list->property("slideStep").toDouble();
         auto a = list->mapToScene(QPointF(100, 50)).toPoint(),
              b = list->mapToScene(QPointF(100, 2 * slideStep + 90)).toPoint();
@@ -1881,6 +2270,16 @@ static void write(const QString &path, const QString &content) {
         QTest::keyClick(window, Qt::Key_Left, Qt::ControlModifier);
         QCOMPARE(d.selected(), 0);
         QCOMPARE(d.source(), many);
+        QTest::keyClick(window, Qt::Key_PageDown, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 5);
+        QCOMPARE(d.slideSource().trimmed(), "# Slide 0");
+        QTest::keyClick(window, Qt::Key_PageUp, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 0);
+        QTest::keyClick(window, Qt::Key_End, Qt::ControlModifier);
+        QCOMPARE(d.selected(), d.count() - 1);
+        QTest::keyClick(window, Qt::Key_Home, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 0);
+        QCOMPARE(d.source(), many);
         QTest::keyClick(window, Qt::Key_Up, Qt::ControlModifier);
         QCOMPARE(d.selected(), 0);
         QCOMPARE(d.source(), many);
@@ -2003,10 +2402,16 @@ static void write(const QString &path, const QString &content) {
         editor->forceActiveFocus();
         QVERIFY(editor->hasActiveFocus());
         const QString beforeJump = d.source();
+        const QString editText = editor->property("text").toString();
+        const int lineEnd = editText.indexOf('\n') < 0 ? editText.size() : editText.indexOf('\n');
+        QVERIFY(lineEnd > 2);
+        editor->setProperty("cursorPosition", 2);
         QTest::keyClick(window, Qt::Key_End);
-        QCOMPARE(d.selected(), d.count() - 1);
+        QCOMPARE(d.selected(), 20);
+        QCOMPARE(editor->property("cursorPosition").toInt(), lineEnd);
         QTest::keyClick(window, Qt::Key_Home);
-        QCOMPARE(d.selected(), 0);
+        QCOMPARE(d.selected(), 20);
+        QCOMPARE(editor->property("cursorPosition").toInt(), 0);
         QCOMPARE(d.source(), beforeJump);
         d.select(20);
         const QString beforeTab = d.source();
@@ -2054,15 +2459,43 @@ static void write(const QString &path, const QString &content) {
         QCOMPARE(d.selected(), selected);
         QTest::keyClick(window, Qt::Key_PageUp);
         QCOMPARE(d.selected(), selected);
-        QString beforeToggle = d.source();
+        const QString beforeToggle = d.source();
+        editor->setProperty("cursorPosition", 0);
+        QTest::keyClick(window, Qt::Key_Right, Qt::ControlModifier);
+        QCOMPARE(d.selected(), selected);
+        QVERIFY(editor->property("cursorPosition").toInt() > 0);
+        QTest::keyClick(window, Qt::Key_Left, Qt::ControlModifier);
+        QCOMPARE(d.selected(), selected);
+        QCOMPARE(editor->property("cursorPosition").toInt(), 0);
+        QTest::keyClick(window, Qt::Key_Down, Qt::ControlModifier);
+        QCOMPARE(d.selected(), selected + 1);
+        QTest::keyClick(window, Qt::Key_PageDown, Qt::ControlModifier);
+        QCOMPARE(d.selected(), selected + 6);
+        QTest::keyClick(window, Qt::Key_Up, Qt::ControlModifier);
+        QCOMPARE(d.selected(), selected + 5);
+        QTest::keyClick(window, Qt::Key_PageUp, Qt::ControlModifier);
+        QCOMPARE(d.selected(), selected);
+        QTest::keyClick(window, Qt::Key_Down, Qt::ControlModifier | Qt::KeypadModifier);
+        QCOMPARE(d.selected(), selected + 1);
+        QTest::keyClick(window, Qt::Key_PageUp, Qt::ControlModifier | Qt::KeypadModifier);
+        QCOMPARE(d.selected(), selected - 4);
+        QTest::keyClick(window, Qt::Key_PageDown, Qt::ControlModifier | Qt::KeypadModifier);
+        QTest::keyClick(window, Qt::Key_Up, Qt::ControlModifier | Qt::KeypadModifier);
+        QCOMPARE(d.selected(), selected);
+        QVERIFY(editor->hasActiveFocus());
+        const int cursorBeforeToggle = editor->property("cursorPosition").toInt();
         QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
         QVERIFY(window->property("markdown").toBool());
         auto source = window->findChild<QQuickItem *>("sourceEditor");
-        QVERIFY(source && source->isVisible() && source->hasActiveFocus());
+        auto sourceFrame = window->findChild<QQuickItem *>("sourceEditorFrame");
+        QVERIFY(source && sourceFrame && source->isVisible() && source->hasActiveFocus());
+        const QColor focusedSourceBorder = sourceFrame->property("focusStroke").value<QColor>();
         QTest::keyClick(window, Qt::Key_Tab);
         QVERIFY(list->hasActiveFocus());
+        QVERIFY(sourceFrame->property("focusStroke").value<QColor>() != focusedSourceBorder);
         QTest::keyClick(window, Qt::Key_Tab);
         QVERIFY(source->hasActiveFocus());
+        QCOMPARE(sourceFrame->property("focusStroke").value<QColor>(), focusedSourceBorder);
         QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
         QVERIFY(list->hasActiveFocus());
         QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
@@ -2070,16 +2503,62 @@ static void write(const QString &path, const QString &content) {
         QCOMPARE(d.source(), beforeToggle);
         QVERIFY(!stage->isVisible());
         QCOMPARE(source->property("text").toString(), d.source());
-        QCOMPARE(source->property("cursorPosition").toInt(), d.sourcePosition());
+        const int sourceCursor =
+            d.sourcePosition() + d.slideSource().indexOf(d.slideText()) + cursorBeforeToggle;
+        QCOMPARE(source->property("cursorPosition").toInt(), sourceCursor);
         QTest::qWait(60);
         auto scroll = window->findChild<QObject *>("sourceScroll");
         auto flick = scroll->property("contentItem").value<QObject *>();
         QRectF rect;
         QVERIFY(QMetaObject::invokeMethod(source, "positionToRectangle", Q_RETURN_ARG(QRectF, rect),
-                                          Q_ARG(int, d.sourcePosition())));
-        QVERIFY(qAbs(flick->property("contentY").toDouble() - rect.y() +
-                     source->property("topPadding").toDouble()) < 2);
+                                          Q_ARG(int, sourceCursor)));
+        QVERIFY(rect.top() >= flick->property("contentY").toDouble());
+        QVERIFY(rect.bottom() <=
+                flick->property("contentY").toDouble() + flick->property("height").toDouble());
         QCOMPARE(d.source(), beforeToggle);
+        auto dividerVisible = [&] {
+            int start = d.sourcePosition();
+            if (start <= 0)
+                return false;
+            int divider = d.source().lastIndexOf('\n', start - 2) + 1;
+            if (d.source().mid(divider, 3) != "---")
+                return false;
+            QRectF dividerRect;
+            if (!QMetaObject::invokeMethod(source, "positionToRectangle",
+                                           Q_RETURN_ARG(QRectF, dividerRect),
+                                           Q_ARG(int, divider + 1)))
+                return false;
+            double y = dividerRect.y() - flick->property("contentY").toDouble();
+            return y >= source->property("topPadding").toDouble() + 2 &&
+                   y + dividerRect.height() <= flick->property("height").toDouble() -
+                                                   source->property("bottomPadding").toDouble() - 2;
+        };
+        // A caret rectangle can fit at the edge even when Qt clips the text glyphs.
+        auto dividerPainted = [&](int position) {
+            QRectF dividerRect;
+            if (!QMetaObject::invokeMethod(source, "positionToRectangle",
+                                           Q_RETURN_ARG(QRectF, dividerRect),
+                                           Q_ARG(int, position + 1)))
+                return false;
+            QImage image = window->grabWindow();
+            QPointF scene = source->mapToScene(QPointF(dividerRect.x() - 10, dividerRect.y()));
+            int x = qRound(scene.x() * image.devicePixelRatio());
+            int y = qRound(scene.y() * image.devicePixelRatio());
+            int height = qRound(dividerRect.height() * image.devicePixelRatio());
+            if (x < 0 || y < 0 || x + 80 >= image.width() || y + height >= image.height())
+                return false;
+            QColor background = image.pixelColor(x + 80, y + height / 2);
+            int ink = 0;
+            for (int row = y; row < y + height; ++row)
+                for (int col = x; col < x + 36; ++col) {
+                    QColor pixel = image.pixelColor(col, row);
+                    if (qAbs(pixel.red() - background.red()) > 40 ||
+                        qAbs(pixel.green() - background.green()) > 40 ||
+                        qAbs(pixel.blue() - background.blue()) > 40)
+                        ++ink;
+                }
+            return ink > 6;
+        };
         QTest::keyClick(window, Qt::Key_Home, Qt::ControlModifier);
         QCOMPARE(source->property("cursorPosition").toInt(), 0);
         QTest::keyClick(window, Qt::Key_PageDown);
@@ -2095,6 +2574,62 @@ static void write(const QString &path, const QString &content) {
         QTest::keyClick(window, Qt::Key_End, Qt::ControlModifier);
         QCOMPARE(source->property("cursorPosition").toInt(), d.source().size());
         QTest::keyClick(window, Qt::Key_Home, Qt::ControlModifier);
+        double visibleSlideY = flick->property("contentY").toDouble();
+        QTest::keyClick(window, Qt::Key_Down, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 1);
+        QCOMPARE(source->property("cursorPosition").toInt(), d.sourcePosition() + 1);
+        QTRY_VERIFY(dividerVisible());
+        QCOMPARE(flick->property("contentY").toDouble(), visibleSlideY);
+        const int wordStart = source->property("cursorPosition").toInt();
+        QTest::keyClick(window, Qt::Key_Right, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 1);
+        QVERIFY(source->property("cursorPosition").toInt() > wordStart);
+        QTest::keyClick(window, Qt::Key_Left, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 1);
+        QCOMPARE(source->property("cursorPosition").toInt(), wordStart);
+        QTest::keyClick(window, Qt::Key_Down, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 2);
+        QTest::keyClick(window, Qt::Key_PageDown, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 7);
+        QCOMPARE(source->property("cursorPosition").toInt(), d.sourcePosition() + 1);
+        QTRY_VERIFY(dividerVisible());
+        QTest::keyClick(window, Qt::Key_PageDown, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 12);
+        QRectF endDivider;
+        QVERIFY(QMetaObject::invokeMethod(source, "positionToRectangle",
+                                          Q_RETURN_ARG(QRectF, endDivider),
+                                          Q_ARG(int, d.sourceEndPosition() + 1)));
+        double neededY = endDivider.y() + endDivider.height() +
+                         source->property("bottomPadding").toDouble() + 2 -
+                         flick->property("height").toDouble();
+        QTRY_VERIFY(qAbs(flick->property("contentY").toDouble() - neededY) < 2);
+        QTRY_VERIFY(dividerVisible());
+        QTRY_VERIFY(dividerPainted(d.sourceEndPosition()));
+        QTest::keyClick(window, Qt::Key_PageUp, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 7);
+        QTest::keyClick(window, Qt::Key_PageDown, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_PageDown, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_PageDown, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 22);
+        QTest::keyClick(window, Qt::Key_PageUp, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 17);
+        QTRY_VERIFY(dividerVisible());
+        QTRY_VERIFY(dividerPainted(d.source().lastIndexOf('\n', d.sourcePosition() - 2) + 1));
+        QTest::keyClick(window, Qt::Key_PageUp, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_PageUp, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 7);
+        QTest::keyClick(window, Qt::Key_Up, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 6);
+        QTest::keyClick(window, Qt::Key_Up, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 5);
+        QTest::keyClick(window, Qt::Key_PageUp, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 0);
+        QTest::keyClick(window, Qt::Key_PageDown, Qt::ControlModifier | Qt::KeypadModifier);
+        QCOMPARE(d.selected(), 5);
+        QCOMPARE(source->property("cursorPosition").toInt(), d.sourcePosition() + 1);
+        QTRY_VERIFY(dividerVisible());
+        QVERIFY(source->hasActiveFocus());
+        QCOMPARE(d.source(), beforeToggle);
         QTest::qWait(60);
         auto sourceFlick = window->findChild<QQuickItem *>("sourceFlick");
         QPointF sourcePoint = sourceFlick->mapToScene(QPointF(100, 100));
@@ -2109,7 +2644,7 @@ static void write(const QString &path, const QString &content) {
         QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
         QVERIFY(!window->property("markdown").toBool());
         QVERIFY(stage->isVisible() && editor->isVisible());
-        QVERIFY(stage->hasActiveFocus());
+        QVERIFY(editor->hasActiveFocus());
         QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
         QVERIFY(window->property("presenting").toBool());
         QVERIFY(!window->findChild<QQuickItem *>("editorPane")->isVisible());
@@ -2119,6 +2654,17 @@ static void write(const QString &path, const QString &content) {
         QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
         QVERIFY(!window->property("presenting").toBool());
         QVERIFY(editor->isVisible());
+        QVERIFY(d.count() > 1);
+        d.select(d.count() - 1);
+        QTest::keyClick(window, Qt::Key_F5, Qt::ShiftModifier);
+        QVERIFY(window->property("presenting").toBool());
+        QCOMPARE(d.selected(), 0);
+        d.select(d.count() - 1);
+        QTest::keyClick(window, Qt::Key_F5, Qt::ShiftModifier);
+        QVERIFY(window->property("presenting").toBool());
+        QCOMPARE(d.selected(), 0);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QVERIFY(!window->property("presenting").toBool());
         auto presenterWindow = window->findChild<QQuickWindow *>("presenterWindow");
         QVERIFY(presenterWindow);
         window->setProperty("presenting", true);
@@ -2206,6 +2752,147 @@ static void write(const QString &path, const QString &content) {
         const double afterInsert = list->property("contentY").toDouble() - list->property("originY").toDouble();
         QVERIFY(qAbs(afterInsert - expected) < 1);
         QVERIFY(afterInsert - beforeInsert <= slideStep);
+        // Map the live cursor through the padding omitted by the slide editor.
+        QString cursorSlides;
+        for (int i = 0; i < 10; ++i)
+            cursorSlides += (i ? "\n\n---\n\n\n" : "\n\n") +
+                            QString("# Slide %1\n\nfirst paragraph\nsecond word here").arg(i) +
+                            QString("\nmore text").repeated(20);
+        d.editSource("---\ntitle: Cursor\n---\n" + cursorSlides + "\n\n");
+        d.select(7);
+        auto bodyStart = [&] {
+            return d.source().indexOf(QString("# Slide %1").arg(d.selected()));
+        };
+        editor->forceActiveFocus();
+        int slideCursor = d.slideText().indexOf("word") + 2;
+        editor->setProperty("cursorPosition", slideCursor);
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+        QVERIFY(source->hasActiveFocus());
+        QCOMPARE(d.selected(), 7);
+        QCOMPARE(source->property("cursorPosition").toInt(), bodyStart() + slideCursor);
+        slideCursor = d.slideText().size() - 4;
+        source->setProperty("cursorPosition", bodyStart() + slideCursor);
+        QTest::keyClick(window, Qt::Key_X);
+        ++slideCursor;
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+        QVERIFY(editor->hasActiveFocus());
+        QCOMPARE(editor->property("cursorPosition").toInt(), slideCursor);
+        auto slideFlick =
+            window->findChild<QObject *>("slideScroll")->property("contentItem").value<QObject *>();
+        QVERIFY(QMetaObject::invokeMethod(editor, "positionToRectangle", Q_RETURN_ARG(QRectF, rect),
+                                          Q_ARG(int, slideCursor)));
+        QTRY_VERIFY(rect.top() >= slideFlick->property("contentY").toDouble() &&
+                    rect.bottom() <= slideFlick->property("contentY").toDouble() +
+                                         slideFlick->property("height").toDouble());
+        QTest::keyClick(window, Qt::Key_Y);
+        ++slideCursor;
+        auto modeButton = window->findChild<QQuickItem *>("modeButton");
+        QVERIFY(modeButton);
+        QTest::mouseClick(
+            window, Qt::LeftButton, Qt::NoModifier,
+            modeButton->mapToScene(QPointF(modeButton->width() / 2, modeButton->height() / 2))
+                .toPoint());
+        QVERIFY(source->hasActiveFocus());
+        QCOMPARE(source->property("cursorPosition").toInt(), bodyStart() + slideCursor);
+
+        QTest::keyClick(window, Qt::Key_Tab);
+        for (int i = 0; i < 2; ++i) {
+            QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+            QVERIFY(list->hasActiveFocus());
+        }
+        QTest::keyClick(window, Qt::Key_Tab);
+        QCOMPARE(d.selected(), 7);
+        QCOMPARE(source->property("cursorPosition").toInt(), bodyStart() + slideCursor);
+
+        d.select(0);
+        const int headerCursor = d.source().indexOf("Cursor") + 2;
+        source->setProperty("cursorPosition", headerCursor);
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+        QCOMPARE(source->property("cursorPosition").toInt(), headerCursor);
+
+        // A sidebar slide change cancels the old position in either editor.
+        for (auto activeEditor : {source, editor}) {
+            activeEditor->setProperty("cursorPosition",
+                                      activeEditor->property("cursorPosition").toInt() + 4);
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTest::keyClick(window, Qt::Key_Right);
+            QTest::keyClick(window, Qt::Key_Tab);
+            QVERIFY(activeEditor->hasActiveFocus());
+            QCOMPARE(activeEditor->property("cursorPosition").toInt(),
+                     activeEditor == source ? bodyStart() : 0);
+            QTest::keyClick(window, Qt::Key_Period, Qt::ControlModifier);
+        }
+        QCOMPARE(d.selected(), 2);
+
+        // Tab preserves source-only positions and the current slide's cursor and viewport.
+        d.editSource("---\ntitle: Test\n---\n\n" + many);
+        d.select(20);
+        QVERIFY(QMetaObject::invokeMethod(window, "openMarkdown"));
+        const int metadataCursor = d.source().indexOf("Test") + 2;
+        source->setProperty("cursorPosition", metadataCursor);
+        QCOMPARE(d.selected(), 0);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QVERIFY(list->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Tab);
+        QVERIFY(source->hasActiveFocus());
+        QCOMPARE(source->property("cursorPosition").toInt(), metadataCursor);
+        const int retainedCursor = d.source().indexOf("# Slide 20") + 6;
+        source->setProperty("cursorPosition", retainedCursor);
+        QCOMPARE(d.selected(), 20);
+        QTest::qWait(60);
+        const double retainedScroll = flick->property("contentY").toDouble();
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QVERIFY(source->hasActiveFocus());
+        QCOMPARE(source->property("cursorPosition").toInt(), retainedCursor);
+        QTRY_COMPARE(flick->property("contentY").toDouble(), retainedScroll);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTest::keyClick(window, Qt::Key_Down);
+        QCOMPARE(d.selected(), 21);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QCOMPARE(source->property("cursorPosition").toInt(), int(d.source().indexOf("# Slide 21")));
+        QTest::keyClick(window, Qt::Key_Tab);
+        QVERIFY(list->hasActiveFocus());
+        d.select(0);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QCOMPARE(source->property("cursorPosition").toInt(), int(d.source().indexOf("# Slide 0")));
+
+        d.editSource("---\ntitle: Test\n---\n\n" + many);
+        d.select(d.count() - 1);
+        QVERIFY(QMetaObject::invokeMethod(window, "openMarkdown"));
+        QTRY_VERIFY(list->property("contentY").toDouble() > list->property("originY").toDouble());
+        QTest::keyClick(window, Qt::Key_Home, Qt::ControlModifier);
+        QCOMPARE(source->property("cursorPosition").toInt(), 0);
+        QCOMPARE(d.selected(), 0);
+        QTRY_VERIFY(
+            qAbs(list->property("contentY").toDouble() - list->property("originY").toDouble()) < 1);
+        QVERIFY(source->hasActiveFocus());
+
+        d.editSource("---\ntitle: Test\n---\n\n# First\n\n---\n\n# Second\n");
+        d.select(1);
+        QVERIFY(QMetaObject::invokeMethod(window, "openMarkdown"));
+        QTest::keyClick(window, Qt::Key_Up, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 0);
+        QCOMPARE(source->property("cursorPosition").toInt(), d.sourcePosition() + 1);
+        QTRY_VERIFY(dividerVisible()); // The closing frontmatter --- anchors slide one.
+        QString tall = "---\ntitle: Test\n---\n\n# First\n\n---\n\n# Tall\n";
+        for (int line = 0; line < 100; ++line)
+            tall += QString("Line %1\n").arg(line);
+        tall += "\n---\n\n# Last\n";
+        d.editSource(tall);
+        d.select(0);
+        QVERIFY(QMetaObject::invokeMethod(window, "openMarkdown"));
+        QTest::keyClick(window, Qt::Key_Down, Qt::ControlModifier);
+        QCOMPARE(d.selected(), 1);
+        int divider = d.source().lastIndexOf('\n', d.sourcePosition() - 2) + 1;
+        QRectF startDivider;
+        QVERIFY(QMetaObject::invokeMethod(source, "positionToRectangle",
+                                          Q_RETURN_ARG(QRectF, startDivider),
+                                          Q_ARG(int, divider + 1)));
+        QTRY_VERIFY(qAbs(flick->property("contentY").toDouble() -
+                         (startDivider.y() - source->property("topPadding").toDouble() - 2)) < 2);
+        QTRY_VERIFY(dividerVisible());
         window->setProperty("allowClose", true);
         window->close();
     }
@@ -2262,6 +2949,108 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(QFile::exists(destination + "/images/a.png"));
         QCOMPARE(d.path(), destination + "/presentation.md");
     }
+    void saveCopyCopiesNestedMedia() {
+        QTemporaryDir tmp;
+        const QString original = nestedMediaDeck(tmp);
+        Deck d;
+        QVERIFY(d.loadPath(original + "/talk.md"));
+        QCOMPARE(d.count(), 4);
+        for (int i = 0; i < 3; ++i)
+            QVERIFY(slideProblems(d.slide(i), d.baseDir()).isEmpty());
+        QCOMPARE(slideProblems(d.slide(3), d.baseDir()),
+                 QStringList{"Missing media: images/gone.png"});
+        const QString copy = tmp.filePath("copy");
+        QVERIFY(QDir().mkpath(copy + "/images"));
+        write(copy + "/images/.hype-poster-0123456789abcdef.jpg", "other cache");
+        QVERIFY2(d.saveCopyPath(copy + "/talk.md"), qPrintable(d.status()));
+        QCOMPARE(d.path(), copy + "/talk.md");
+        for (const QString &relative :
+             {QString("images/nested/photo.png"), QString("videos/clips/talk.mp4"),
+              QString("images/posters/.cover.png"), QString("images/.private/logo.png"),
+              QString("images/unused/extra.txt")}) {
+            QFile a(original + '/' + relative), b(copy + '/' + relative);
+            QVERIFY2(b.open(QIODevice::ReadOnly), qPrintable(relative));
+            QVERIFY(a.open(QIODevice::ReadOnly));
+            QCOMPARE(b.readAll(), a.readAll());
+        }
+        QFile cache(copy + "/images/.hype-poster-0123456789abcdef.jpg");
+        QVERIFY(cache.open(QIODevice::ReadOnly));
+        QCOMPARE(cache.readAll(), QByteArray("other cache"));
+        for (int i = 0; i < 3; ++i)
+            QVERIFY(slideProblems(d.slide(i), d.baseDir()).isEmpty());
+        QCOMPARE(slideProblems(d.slide(3), d.baseDir()),
+                 QStringList{"Missing media: images/gone.png"});
+    }
+    void saveCopyRemovesCreatedDirectories() {
+        QTemporaryDir tmp;
+        const QString original = nestedMediaDeck(tmp), blocked = tmp.filePath("blocked");
+        Deck d;
+        QVERIFY(d.loadPath(original + "/talk.md"));
+        QVERIFY(QDir().mkpath(blocked + "/talk.md"));
+        QVERIFY(!d.saveCopyPath(blocked + "/talk.md"));
+        QVERIFY(!QFileInfo::exists(blocked + "/images"));
+        QVERIFY(!QFileInfo::exists(blocked + "/videos"));
+        QCOMPARE(d.path(), original + "/talk.md");
+    }
+    void saveCopyRejectsNestedCollision() {
+        QTemporaryDir tmp;
+        const QString original = nestedMediaDeck(tmp), clash = tmp.filePath("clash");
+        Deck d;
+        QVERIFY(d.loadPath(original + "/talk.md"));
+        QVERIFY(QDir().mkpath(clash + "/images/nested"));
+        write(clash + "/images/nested/photo.png", "different");
+        QVERIFY(!d.saveCopyPath(clash + "/talk.md"));
+        QVERIFY2(d.status().contains("images/nested/photo.png"), qPrintable(d.status()));
+        QVERIFY(!QFileInfo::exists(clash + "/videos"));
+        QVERIFY(!QFileInfo::exists(clash + "/images/posters"));
+        QFile kept(clash + "/images/nested/photo.png");
+        QVERIFY(kept.open(QIODevice::ReadOnly));
+        QCOMPARE(kept.readAll(), QByteArray("different"));
+    }
+    void saveCopyRejectsBrokenReferences() {
+        QTemporaryDir tmp;
+        const QString escape = tmp.filePath("escape"), copy = tmp.filePath("deep/copy");
+        QImage image(8, 8, QImage::Format_RGB32);
+        image.fill(Qt::green);
+        QVERIFY(image.save(tmp.filePath("outside.png")));
+        QVERIFY(QDir().mkpath(escape + "/images"));
+        QVERIFY(image.save(escape + "/images/kept.png"));
+        write(escape + "/talk.md",
+              "![](images/kept.png)\n\n---\n\n![](images/../../outside.png)\n");
+        Deck d;
+        QVERIFY(d.loadPath(escape + "/talk.md"));
+        QCOMPARE(d.count(), 2);
+        QVERIFY(slideProblems(d.slide(0), d.baseDir()).isEmpty());
+        QVERIFY(slideProblems(d.slide(1), d.baseDir()).isEmpty());
+        QVERIFY(QDir().mkpath(copy));
+        QVERIFY(!d.saveCopyPath(copy + "/talk.md"));
+        QVERIFY(!QFileInfo::exists(copy + "/talk.md"));
+        QVERIFY(!QFileInfo::exists(copy + "/images"));
+        QCOMPARE(d.path(), escape + "/talk.md");
+        QVERIFY2(d.status().contains("slide 2"), qPrintable(d.status()));
+        QVERIFY2(d.status().contains("Missing media"), qPrintable(d.status()));
+    }
+    void saveCopyIgnoresItsStagingDirectory() {
+        QTemporaryDir tmp;
+        const QString original = tmp.filePath("original"),
+                      copy = tmp.filePath("original/videos/copy");
+        QVERIFY(QDir().mkpath(original + "/images"));
+        QVERIFY(QDir().mkpath(copy));
+        write(original + "/images/extra.txt", "extra");
+        write(original + "/talk.md", "# Hello");
+        Deck d;
+        QVERIFY(d.loadPath(original + "/talk.md"));
+        QVERIFY(d.saveCopyPath(copy + "/talk.md"));
+        QFile extra(copy + "/images/extra.txt");
+        QVERIFY(extra.open(QIODevice::ReadOnly));
+        QCOMPARE(extra.readAll(), QByteArray("extra"));
+        for (QDirIterator it(copy, QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot,
+                             QDirIterator::Subdirectories);
+             it.hasNext();) {
+            const QString entry = it.next();
+            QVERIFY2(!entry.contains(".hype-save-"), qPrintable(entry));
+        }
+    }
     void mediaControlsPreserveCodeAndAltText() {
         Deck d;
         const QString examples = "```markdown\n![](fenced.png)\n```\n"
@@ -2292,6 +3081,112 @@ static void write(const QString &path, const QString &content) {
         const QString original = d.source();
         d.setMediaMode("invalid");
         QCOMPARE(d.source(), original);
+    }
+    void placementControls() {
+        Deck d;
+        d.editSlide("# Headline\n![span background=blur alt=\"Company\"](logo.png)");
+        d.setMediaPosition("bottom-right");
+        auto m = parseMedia(d.slideText(), {});
+        QVERIFY2(m.error.isEmpty(), qPrintable(m.error));
+        QCOMPARE(m.position, QString("bottom-right"));
+        QCOMPARE(m.size, 10.0);
+        QVERIFY(m.background.isEmpty());
+        QVERIFY(d.slideText().contains("alt=\"Company\""));
+        QCOMPARE(d.media()["position"].toString(), QString("bottom-right"));
+        QCOMPARE(d.media()["size"].toDouble(), 10.0);
+        QCOMPARE(d.media()["alignment"].toInt(), int(Qt::AlignRight | Qt::AlignBottom));
+        QCOMPARE(d.property("mediaPositions").toStringList(), mediaPositions());
+        d.setMediaSize(12.5);
+        QCOMPARE(parseMedia(d.slideText(), {}).size, 12.5);
+        d.setMediaSize(20);
+        QCOMPARE(parseMedia(d.slideText(), {}).size, 20.0);
+        d.setMediaPosition("top-left");
+        m = parseMedia(d.slideText(), {});
+        QCOMPARE(m.position, QString("top-left"));
+        QCOMPARE(m.size, 20.0); // Moving keeps the chosen size.
+        d.setMediaMode("fit");
+        m = parseMedia(d.slideText(), {});
+        QVERIFY(m.error.isEmpty());
+        QVERIFY(!m.placed());
+        const QString unplaced = d.source();
+        d.setMediaSize(10); // Size only applies to placed images.
+        QCOMPARE(d.source(), unplaced);
+        d.setMediaPosition("nowhere");
+        QCOMPARE(d.source(), unplaced);
+        d.editSlide("![](demo.mp4)");
+        const QString video = d.source();
+        d.setMediaPosition("bottom-right");
+        QCOMPARE(d.source(), video);
+        // Choosing a background returns a placed image to a full layout.
+        d.editSlide("![position=bottom-right size=20%](logo.png)");
+        d.setMediaBackground("white");
+        m = parseMedia(d.slideText(), {});
+        QVERIFY2(m.error.isEmpty(), qPrintable(m.error));
+        QVERIFY(!m.placed());
+        QCOMPARE(m.background, QString("white"));
+    }
+    void placementUndoesStepByStep() {
+        Deck d;
+        d.editSource("# Headline\n\n![fit background=white alt=\"Logo\"](logo.png)\n");
+        const QString original = d.source();
+        d.setMediaPosition("bottom-right");
+        const QString placed = d.source();
+        d.setMediaSize(20);
+        QCOMPARE(parseMedia(d.slideSource(), {}).size, 20.0);
+        d.undo();
+        QCOMPARE(d.source(), placed);
+        d.undo();
+        QCOMPARE(d.source(), original); // fit, background, and alt text all come back.
+        d.redo();
+        QCOMPARE(d.source(), placed);
+    }
+    void replacingPlacedMediaKeepsPlacement() {
+        const QString placed =
+            "# Headline\n\n![position=bottom-right size=20% alt=\"Old\"](old.png)\n";
+        auto m = parseMedia(withReplacedMedia(placed, "new.png"), {});
+        QCOMPARE(m.file, QString("new.png"));
+        QCOMPARE(m.position, QString("bottom-right"));
+        QCOMPARE(m.size, 20.0);
+        QVERIFY(m.error.isEmpty());
+        // Videos cannot be placed, and unplaced media is replaced as before.
+        QVERIFY(!parseMedia(withReplacedMedia(placed, "demo.mp4"), {}).placed());
+        QVERIFY(parseMedia(withReplacedMedia(placed, "demo.mp4"), {}).error.isEmpty());
+        QCOMPARE(withReplacedMedia("# Headline\n![fit](old.png)", "new.png"),
+                 QString("# Headline\n![](<new.png>)"));
+        QCOMPARE(withReplacedMedia("# Headline", "new.png"),
+                 QString("# Headline\n![](<new.png>)\n"));
+
+        // Importing a file onto a placed slide keeps it in the corner.
+        QTemporaryDir tmp;
+        Deck deck;
+        QVERIFY(deck.savePath(tmp.path() + "/talk.md"));
+        QImage logo(40, 20, QImage::Format_RGB32);
+        logo.fill(Qt::red);
+        QVERIFY(logo.save(tmp.path() + "/new.png"));
+        deck.editSlide(placed);
+        QVERIFY(deck.importMedia(QUrl::fromLocalFile(tmp.path() + "/new.png")));
+        m = parseMedia(deck.slideSource(), deck.baseDir());
+        QCOMPARE(m.position, QString("bottom-right"));
+
+        // Keep enough detail to enlarge the image after pasting it into a small box.
+        deck.editSlide(placed);
+        QImage large(4800, 3600, QImage::Format_RGB32);
+        large.fill(Qt::blue);
+        QApplication::clipboard()->setImage(large);
+        QVERIFY(deck.pasteMedia());
+        QTRY_VERIFY_WITH_TIMEOUT(!deck.compressingImage(), 10000);
+        QVERIFY(deck.savePastedMedia("pasted").isEmpty());
+        m = parseMedia(deck.slideSource(), deck.baseDir());
+        QCOMPARE(m.position, QString("bottom-right"));
+        QCOMPARE(m.size, 20.0);
+        QCOMPARE(QImage(m.path).size(), QSize(2880, 2160));
+        const QString pastedPath = m.path;
+        deck.setMediaSize(35);
+        deck.setMediaMode("fit");
+        m = parseMedia(deck.slideSource(), deck.baseDir());
+        QCOMPARE(m.path, pastedPath);
+        QVERIFY(!m.placed());
+        QCOMPARE(QImage(m.path).size(), QSize(2880, 2160));
     }
     void mediaImportCollisionAndPortability() {
         QTemporaryDir tmp;
@@ -2748,7 +3643,9 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects()[0]);
         auto preview = window->findChild<QQuickItem *>("slidePreview");
-        QVERIFY(preview);
+        auto quick = window->findChild<QQuickItem *>("slideQuickPreview");
+        auto frame = window->findChild<QQuickItem *>("slideFrame");
+        QVERIFY(preview && quick && frame);
         for (int i = 0; i < 40; ++i) {
             deck.select((i * 7) % 18);
             QTest::qWait(5);
@@ -2764,6 +3661,22 @@ static void write(const QString &path, const QString &content) {
         capture = preview->grabToImage();
         QTRY_VERIFY(!capture->image().isNull());
         QCOMPARE(capture->image().pixelColor(capture->image().width() / 2, capture->image().height() / 2),
+                 QColor::fromRgb(QColor::fromHsv(17 * 19, 230, 210).rgb()));
+        // A late thumbnail must never cover the full render, even if its visible
+        // state lags behind the full image's Ready notification.
+        quick->setProperty("source", "image://slides/" + deck.renderId(0));
+        QTRY_COMPARE_WITH_TIMEOUT(quick->property("status").toInt(), 1, 5000);
+        quick->setVisible(true);
+        QVERIFY(quick->isVisible());
+        auto thumbnailCapture = quick->grabToImage();
+        QTRY_VERIFY(!thumbnailCapture->image().isNull());
+        QCOMPARE(thumbnailCapture->image().pixelColor(thumbnailCapture->image().width() / 2,
+                                                      thumbnailCapture->image().height() / 2),
+                 QColor::fromRgb(QColor::fromHsv(0, 230, 210).rgb()));
+        auto stageCapture = frame->grabToImage();
+        QTRY_VERIFY(!stageCapture->image().isNull());
+        QCOMPARE(stageCapture->image().pixelColor(stageCapture->image().width() / 2,
+                                                  stageCapture->image().height() / 2),
                  QColor::fromRgb(QColor::fromHsv(17 * 19, 230, 210).rgb()));
     }
     void imageTextOverlaysEveryLayout() {
@@ -3189,6 +4102,45 @@ static void write(const QString &path, const QString &content) {
         cr.replace("\n", "\r");
         QCOMPARE(render(cr), render(explicitBreaks));
         QCOMPARE(render("`one`\n`two`"), render("`one`\\\n`two`"));
+    }
+    void svgStaysSharp() {
+        QTemporaryDir tmp;
+        QVERIFY(QDir().mkpath(tmp.path() + "/images"));
+        // An SVG declaring a small size, as icons and design-tool exports usually do.
+        write(tmp.path() + "/images/chart.svg",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 400 240\">"
+              "<rect x=\"20\" y=\"140\" width=\"60\" height=\"80\" fill=\"#7aa2f7\"/>"
+              "<text x=\"20\" y=\"30\" font-size=\"20\" fill=\"#c0caf5\">Requests per "
+              "second</text></svg>");
+        // Loaded for a slide, it takes the slide's size rather than its declared 400 by 240.
+        const QImage loaded =
+            readSizedImage(tmp.path() + "/images/chart.svg", QSize(1780, 980), false);
+        QCOMPARE(loaded.size(), QSize(1633, 980));
+        // Alone on a slide, it stays vector in a PDF: its text is text, and no picture is embedded.
+        write(tmp.path() + "/talk.md", "![fit](chart.svg)\n");
+        Deck deck;
+        QVERIFY(deck.loadPath(tmp.path() + "/talk.md"));
+        QVERIFY(deck.exportPdf(tmp.path() + "/vector.pdf"));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(tmp.path() + "/vector.pdf"), QPdfDocument::Error::None);
+        QVERIFY(pdf.getAllText(0).text().contains("Requests per second"));
+        QFile file(tmp.path() + "/vector.pdf");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QVERIFY(!file.readAll().contains("/Subtype /Image"));
+        // A placed logo has no softening even beside text, so it should remain vector too.
+        deck.editSource("# Growth\n\n![position=bottom-right size=20%](chart.svg)\n");
+        QVERIFY(deck.exportPdf(tmp.path() + "/placed.pdf"));
+        QFile placed(tmp.path() + "/placed.pdf");
+        QVERIFY(placed.open(QIODevice::ReadOnly));
+        QVERIFY(!placed.readAll().contains("/Subtype /Image"));
+        // Under an ordinary headline it is still softened, from a sharp full-size copy.
+        deck.editSource("![fit](chart.svg)\n\n# Growth\n");
+        QVERIFY(deck.exportPdf(tmp.path() + "/softened.pdf"));
+        QFile softened(tmp.path() + "/softened.pdf");
+        QVERIFY(softened.open(QIODevice::ReadOnly));
+        const QByteArray bytes = softened.readAll();
+        QVERIFY(bytes.contains("/Subtype /Image"));
+        QVERIFY(!bytes.contains("/Width 400"));
     }
     void workSizesToTheMachine() {
         const qint64 mb = 1 << 20, gb = 1LL << 30;

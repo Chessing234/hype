@@ -12,6 +12,7 @@
 #include <QDataStream>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFutureWatcher>
@@ -138,7 +139,7 @@ QString setScalar(QString header, const QString &key, const QString &value) {
 Deck::Deck(QObject *parent, const QString &exportProgram) : QAbstractListModel(parent),
     m_exportProgram(exportProgram.isEmpty() ? QCoreApplication::applicationFilePath() : exportProgram) {
     discoverThemes();
-    m_source = "---\ntitle: Untitled\ntheme: tokyo-night\n---\n\n# Your next idea\n";
+    m_source = "---\ntheme: tokyo-night\n---\n\n# Your next idea\n";
     m_parsed = parseDeck(m_source);
     m_saved = m_source;
     // Writers may truncate, or remove and recreate, the file; read it once they settle.
@@ -363,8 +364,11 @@ void Deck::selectAt(int position) {
             select(i);
             return;
         }
+    // Front matter precedes every slide; keep the selection at the document's start.
+    select(0);
 }
 int Deck::sourcePosition() const { return m_parsed.slides.value(m_selected).start; }
+int Deck::sourceEndPosition() const { return m_parsed.slides.value(m_selected).end; }
 void Deck::editSource(const QString &s) { apply(s, m_selected); }
 void Deck::editSlide(const QString &s) {
     const auto range = m_parsed.slides.value(m_selected);
@@ -589,6 +593,7 @@ void Deck::chooseTheme(const QString &name) {
     }
     replaceHeader(header);
 }
+QStringList Deck::mediaPositions() const { return ::mediaPositions(); }
 QVariantMap Deck::media() const {
     const QString source = slideSource(), base = baseDir();
     if (!m_mediaCache.isEmpty() && m_mediaSource == source && m_mediaBase == base)
@@ -621,7 +626,10 @@ QVariantMap Deck::media() const {
                     {"title", title},
                     {"rect", mediaRect(m)},
                     {"background", m.background},
-                    {"overlay", m.overlay}};
+                    {"overlay", m.overlay},
+                    {"position", m.position},
+                    {"size", m.size},
+                    {"alignment", int(m.alignment)}};
     return m_mediaCache;
 }
 void Deck::watch() {
@@ -852,13 +860,24 @@ bool Deck::saveCopyPath(const QString &path) {
     QList<QPair<QString, QString>> copies;
     // Check every collision before publishing anything; compare streams so a
     // large video never requires two whole-file buffers in the editor.
+    const QString stagingPrefix = QDir(staging.path()).absolutePath() + '/';
     for (const QString &kind : {QString("images"), QString("videos")}) {
         const QDir source(baseDir() + '/' + kind);
-        for (const auto &name : source.entryList(QDir::Files)) {
+        // Copy the whole tree, hidden files included, since references may
+        // point anywhere inside it. Poster caches are regenerated on demand.
+        for (QDirIterator it(source.absolutePath(), QDir::Files | QDir::Hidden,
+                             QDirIterator::Subdirectories);
+             it.hasNext();) {
+            const QString file = it.next();
+            if (file.startsWith(stagingPrefix))
+                continue;
+            const QString name = source.relativeFilePath(file);
+            if (kind == "images" && name.startsWith(".hype-poster-") && !name.contains('/'))
+                continue;
             const QString relative = kind + '/' + name;
             const QString target = destination.filePath(relative);
             if (QFile::exists(target)) {
-                QFile a(source.filePath(name)), b(target);
+                QFile a(file), b(target);
                 QCryptographicHash ah(QCryptographicHash::Sha256), bh(QCryptographicHash::Sha256);
                 if (!a.open(QIODevice::ReadOnly) || !b.open(QIODevice::ReadOnly) ||
                     !ah.addData(&a) || !bh.addData(&b)) {
@@ -866,14 +885,14 @@ bool Deck::saveCopyPath(const QString &path) {
                     return false;
                 }
                 if (ah.result() != bh.result()) {
-                    setStatus("Save As media collision: " + name);
+                    setStatus("Save As media collision: " + relative);
                     return false;
                 }
             } else {
-                QDir().mkpath(staging.filePath(kind));
                 const QString staged = staging.filePath(relative);
-                if (!QFile::copy(source.filePath(name), staged)) {
-                    setStatus("Could not copy " + name);
+                QDir().mkpath(QFileInfo(staged).absolutePath());
+                if (!QFile::copy(file, staged)) {
+                    setStatus("Could not copy " + relative);
                     return false;
                 }
                 copies.append({staged, target});
@@ -884,13 +903,18 @@ bool Deck::saveCopyPath(const QString &path) {
     auto rollback = [&] {
         for (const auto &file : published)
             QFile::remove(file);
-        for (const auto &directory : directories)
-            QDir().rmdir(directory);
+        for (auto directory = directories.crbegin(); directory != directories.crend(); ++directory)
+            QDir().rmdir(*directory);
     };
     for (const auto &copy : copies) {
-        const QString directory = QFileInfo(copy.second).absolutePath();
-        if (!QDir(directory).exists()) {
-            if (!QDir().mkpath(directory)) {
+        // Record every missing ancestor parent-first so rollback can remove
+        // them child-first.
+        QStringList missing;
+        for (QString directory = QFileInfo(copy.second).absolutePath();
+             !QFileInfo::exists(directory); directory = QFileInfo(directory).absolutePath())
+            missing.prepend(directory);
+        for (const auto &directory : missing) {
+            if (!QDir().mkdir(directory)) {
                 rollback();
                 setStatus("Could not create media directory");
                 return false;
@@ -904,6 +928,20 @@ bool Deck::saveCopyPath(const QString &path) {
         }
         published << copy.second;
     }
+    // Media outside images/ and videos/ is not copied, so refuse a copy that
+    // would lose a reference the original resolves.
+    for (int i = 0; i < count(); ++i) {
+        const QStringList before = slideProblems(slide(i), baseDir());
+        for (const QString &problem : slideProblems(slide(i), destination.absolutePath())) {
+            if (!before.contains(problem)) {
+                rollback();
+                setStatus(QString("Save As could not copy media for slide %1: %2")
+                              .arg(i + 1)
+                              .arg(problem));
+                return false;
+            }
+        }
+    }
     if (savePath(path))
         return true;
     rollback();
@@ -916,7 +954,7 @@ void Deck::newDeck() {
     m_path.clear();
     m_saved.clear();
     m_externalChange = false;
-    apply("---\ntitle: Untitled\ntheme: tokyo-night\n---\n\n# Your next idea\n", 0);
+    apply("---\ntheme: tokyo-night\n---\n\n# Your next idea\n", 0);
     m_undo.clear();
     m_redo.clear();
     watch();
@@ -991,7 +1029,7 @@ bool Deck::importMedia(const QUrl &url, bool newSlide) {
     }
     if (newSlide)
         addSlide();
-    editSlide(withMedia(slideSource(), "![](<" + name + ">)"));
+    editSlide(withReplacedMedia(slideSource(), name));
     setStatus("Added " + name);
     return true;
 }
@@ -1057,7 +1095,7 @@ bool Deck::pasteMedia() {
         emit pasteRequested(suggested, extension, video);
         return true;
     }
-    const auto media = parseMedia(withMedia(slideSource(), "![](<paste.png>)"), baseDir());
+    const auto media = parseMedia(withReplacedMedia(slideSource(), "paste.png"), baseDir());
     const auto generation = ++m_pasteGeneration;
     m_compressingImage = true;
     emit compressingImageChanged();
@@ -1086,6 +1124,7 @@ bool Deck::pasteMedia() {
     });
     // Clipboard access stays on the UI thread; decoding, scaling and both lossless
     // encoders work on an independent snapshot without touching the document.
+    // Keep enough detail if the image is enlarged or switched back to Fit later.
     watcher->setFuture(QtConcurrent::run([pending = m_paste, image, span = media.span]() mutable -> Result {
         const QSize canvas(3840, 2160);
         QSize original;
@@ -1162,7 +1201,7 @@ QString Deck::savePastedMedia(const QString &value) {
     if (!saved)
         return "Could not save " + name;
     cancelPaste();
-    editSlide(withMedia(slideSource(), "![](<" + name + ">)"));
+    editSlide(withReplacedMedia(slideSource(), name));
     setStatus("Added " + name);
     return {};
 }
@@ -1201,7 +1240,8 @@ void Deck::setMediaBackground(const QString &mode) {
     // A background only shows around fitted media, so choosing one stops the media spanning.
     const bool fittedBackground = mode == "blur" || mode == "white" || mode == "black" ||
                                   (media.video && mode == "auto");
-    QStringList remove{"background"}, add{"background=" + mode};
+    // Backgrounds belong to full layouts, so choosing one unplaces the image.
+    QStringList remove{"background", "position", "size"}, add{"background=" + mode};
     if (fittedBackground) {
         remove << "span" << "fit";
         add.prepend("fit");
@@ -1211,7 +1251,25 @@ void Deck::setMediaBackground(const QString &mode) {
 void Deck::setMediaMode(const QString &mode) {
     if (!QStringList{"fit", "span"}.contains(mode))
         return;
-    editSlide(withMediaDirectives(slideSource(), {"fit", "span"}, {mode}));
+    editSlide(withMediaDirectives(slideSource(), {"fit", "span", "position", "size"}, {mode}));
+}
+void Deck::setMediaPosition(const QString &position) {
+    if (!mediaPositions().contains(position))
+        return;
+    const auto media = parseMedia(slideSource(), baseDir());
+    if (media.file.isEmpty() || media.video)
+        return;
+    // Placing replaces the full layout; a new placement starts at the default size.
+    const QString size = QString("size=%1%").arg(media.placed() ? media.size : defaultPlacedSize);
+    editSlide(withMediaDirectives(slideSource(),
+                                  {"fit", "span", "background", "overlay", "position", "size"},
+                                  {"position=" + position, size}));
+}
+void Deck::setMediaSize(double percent) {
+    const auto media = parseMedia(slideSource(), baseDir());
+    if (!media.placed() || percent < 1 || percent > 100)
+        return;
+    editSlide(withMediaDirectives(slideSource(), {"size"}, {QString("size=%1%").arg(percent)}));
 }
 void Deck::exportDialog(const QString &format) {
     if (m_exporting)

@@ -9,11 +9,22 @@
 class QTextDocument;
 struct Media {
     QString file, path, poster, error, background;
+    QString svg; // A ```svg fence, drawn as vectors where a picture would be
+    int svgBlocks = 0;
     bool video = false, span = false, loop = false, muted = false, autoplay = true;
     double overlay = 0;
     QString text;
+    // A placed image sits at a position, sized as a percentage of the slide.
+    QString position;
+    double size = 0;
+    Qt::Alignment alignment = Qt::AlignCenter;
+    bool placed() const { return !position.isEmpty(); }
 };
+constexpr double defaultPlacedSize = 10;
+const QStringList &mediaPositions();
 QRectF mediaRect(const Media &media);
+QRectF mediaImageRect(const Media &media, const QSizeF &image);
+QString withReplacedMedia(const QString &source, const QString &file);
 QImage softenedImage(const QImage &image, const QSizeF &slideSize);
 QString withMedia(const QString &source, const QString &reference);
 QString withMediaDirectives(const QString &source, const QStringList &remove,

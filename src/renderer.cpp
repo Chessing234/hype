@@ -17,6 +17,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSet>
+#include <QSvgRenderer>
 #include <QTemporaryFile>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -24,6 +25,7 @@
 #include <QTextTable>
 #include <QTimer>
 #include <QWaitCondition>
+#include <QXmlStreamReader>
 
 static QRegularExpression mediaRe(R"(!\[([^\]]*)\]\((?:<([^>]+)>|([^\s)]+))\))");
 namespace {
@@ -110,6 +112,33 @@ QString speakerNotes(const QString &source) {
     }
     return notes.join("\n\n");
 }
+static bool isVideoFile(const QString &file) {
+    return QStringList{"mp4", "m4v", "mov", "webm", "mkv"}.contains(
+        QFileInfo(file).suffix().toLower());
+}
+// The one list of placed-image positions and where each pins its image.
+static const QList<std::pair<QString, Qt::Alignment>> &placements() {
+    static const QList<std::pair<QString, Qt::Alignment>> list{
+        {"top-left", Qt::AlignLeft | Qt::AlignTop},
+        {"top", Qt::AlignHCenter | Qt::AlignTop},
+        {"top-right", Qt::AlignRight | Qt::AlignTop},
+        {"left", Qt::AlignLeft | Qt::AlignVCenter},
+        {"center", Qt::AlignCenter},
+        {"right", Qt::AlignRight | Qt::AlignVCenter},
+        {"bottom-left", Qt::AlignLeft | Qt::AlignBottom},
+        {"bottom", Qt::AlignHCenter | Qt::AlignBottom},
+        {"bottom-right", Qt::AlignRight | Qt::AlignBottom}};
+    return list;
+}
+const QStringList &mediaPositions() {
+    static const QStringList names = [] {
+        QStringList result;
+        for (const auto &placement : placements())
+            result << placement.first;
+        return result;
+    }();
+    return names;
+}
 static QString assetPath(const QString &base, QString file, bool video) {
     if (QFileInfo(file).isAbsolute())
         return file;
@@ -132,6 +161,15 @@ QString withMedia(const QString &source, const QString &reference) {
     else
         updated += "\n" + reference + "\n";
     return updated;
+}
+QString withReplacedMedia(const QString &source, const QString &file) {
+    // A new logo keeps the old one's corner and size; other layouts start fresh.
+    const auto current = parseMedia(source, {});
+    const QString flags =
+        current.placed() && !isVideoFile(file)
+            ? QString("position=%1 size=%2%").arg(current.position, QString::number(current.size))
+            : QString();
+    return withMedia(source, "![" + flags + "](<" + file + ">)");
 }
 QString withMediaDirectives(const QString &source, const QStringList &remove,
                             const QStringList &add) {
@@ -173,8 +211,7 @@ static Media readMedia(const QString &source, const QString &base) {
     if (!m.hasMatch())
         return result;
     result.file = m.captured(2).isEmpty() ? m.captured(3) : m.captured(2);
-    result.video = QStringList{"mp4", "m4v", "mov", "webm", "mkv"}.contains(
-        QFileInfo(result.file).suffix().toLower());
+    result.video = isVideoFile(result.file);
     result.path = assetPath(base, result.file, result.video);
     result.text.remove(m.capturedStart(), m.capturedLength());
     result.span = !result.video &&
@@ -214,7 +251,23 @@ static Media readMedia(const QString &source, const QString &base) {
                 result.autoplay = value != "false";
             else if (key == "overlay")
                 explicitOverlay = value;
-            else if (key == "background") {
+            else if (key == "position") {
+                // Errors name the directive, never the author's value, which may hold markup.
+                result.position = value;
+                if (!mediaPositions().contains(value))
+                    result.error = "Unknown position";
+            } else if (key == "size") {
+                // Plain decimals only: toDouble() would also accept "nan" and "1e1".
+                static const QRegularExpression percentage(R"(^(\d{1,3}(?:\.\d+)?)%$)");
+                const auto number = percentage.match(value);
+                result.size = number.hasMatch() ? number.captured(1).toDouble() : 0;
+                if (result.size < 1 || result.size > 100) {
+                    result.error = "Size must be a percentage from 1% to 100%";
+                    result.size = 0;
+                }
+                if (result.position.isEmpty())
+                    result.position = "center";
+            } else if (key == "background") {
                 result.background = value;
                 if (value != "auto" && value != "theme" && value != "blur" && !QColor(value).isValid())
                     result.error = "Invalid background color";
@@ -228,6 +281,21 @@ static Media readMedia(const QString &source, const QString &base) {
     }
     if (fit && span)
         result.error = "Choose either span or fit";
+    if (result.placed()) {
+        if (result.video)
+            result.error = "Only images can be placed";
+        else if (fit || span || !result.background.isEmpty() || !explicitOverlay.isEmpty())
+            result.error = "A placed image cannot use fit, span, background, or overlay";
+        if (result.size == 0)
+            result.size = defaultPlacedSize;
+        for (const auto &[position, alignment] : placements())
+            if (position == result.position)
+                result.alignment = alignment;
+        // A placed image leaves the slide's own layout and colors alone.
+        result.span = false;
+        result.overlay = 0;
+        return result;
+    }
     // A background choice implies fitting unless span was explicitly requested.
     if (!span && (result.background == "blur" || result.background == "auto"))
         result.span = false;
@@ -242,13 +310,113 @@ static Media readMedia(const QString &source, const QString &base) {
     }
     return result;
 }
+// The first fence in this language: taken out of the text, its lines returned in body.
+static bool takeFence(QString &text, const QString &language, QString *body) {
+    static const QRegularExpression marker("^ {0,3}(`{3,}|~{3,})(.*)$");
+    int position = 0, fenceLength = 0, start = -1, content = 0;
+    QChar fence;
+    while (position < text.size()) {
+        int end = text.indexOf('\n', position);
+        if (end < 0)
+            end = text.size();
+        const auto match = marker.match(text.mid(position, end - position));
+        if (match.hasMatch()) {
+            const QString run = match.captured(1);
+            if (!fenceLength) {
+                fence = run[0];
+                fenceLength = run.size();
+                if (match.captured(2).trimmed().section(' ', 0, 0).compare(
+                        language, Qt::CaseInsensitive) == 0) {
+                    start = position;
+                    content = qMin(int(text.size()), end + 1);
+                }
+            } else if (run[0] == fence && run.size() >= fenceLength &&
+                       match.captured(2).trimmed().isEmpty()) {
+                fenceLength = 0;
+                if (start >= 0) {
+                    *body = text.mid(content, position - content);
+                    text.remove(start, qMin(int(text.size()), end + 1) - start);
+                    return true;
+                }
+            }
+        }
+        position = end + 1;
+    }
+    return false;
+}
+// The deck's colors by name, as var(--accent), and its colors and font as the SVG's defaults,
+// so a drawing follows the theme unless it says otherwise.
+static QByteArray themedSvg(const QString &svg, const QVariantMap &palette) {
+    static const QRegularExpression variable(R"(var\(\s*--([a-z_-]+)\s*\))"),
+        root("<svg\\b([^>]*)>");
+    QString themed;
+    int last = 0;
+    for (auto it = variable.globalMatch(svg); it.hasNext();) {
+        const auto m = it.next();
+        const QString value = palette.value(m.captured(1).replace('-', '_')).toString();
+        themed +=
+            svg.mid(last, m.capturedStart() - last) + (value.isEmpty() ? m.captured(0) : value);
+        last = m.capturedEnd();
+    }
+    themed += svg.mid(last);
+    if (const auto m = root.match(themed); m.hasMatch()) {
+        const QString attributes = m.captured(1), ink = palette.value("foreground").toString();
+        QString defaults;
+        if (!attributes.contains(QRegularExpression("(^|\\s)xmlns\\s*=")))
+            defaults += " xmlns=\"http://www.w3.org/2000/svg\"";
+        if (!attributes.contains(QRegularExpression("(^|\\s)color\\s*=")))
+            defaults += " color=\"" + ink + "\"";
+        if (!attributes.contains(QRegularExpression("(^|\\s)fill\\s*=")))
+            defaults += " fill=\"" + ink + "\"";
+        if (!attributes.contains(QRegularExpression("(^|\\s)font-family\\s*=")))
+            defaults += " font-family=\"" +
+                        palette.value("font", "JetBrains Mono").toString().toHtmlEscaped() + "\"";
+        themed.insert(m.capturedStart(1), defaults);
+    }
+    return themed.toUtf8();
+}
+// Why an ```svg fence can't be drawn, or empty when it can. Lines count within the fence.
+static QString svgProblem(const QString &svg) {
+    QXmlStreamReader xml(svg);
+    bool first = true;
+    while (!xml.atEnd()) {
+        if (xml.readNext() == QXmlStreamReader::StartElement && first) {
+            first = false;
+            if (xml.name() != QLatin1String("svg"))
+                return "An svg block holds one <svg> element";
+        }
+    }
+    if (xml.hasError())
+        return QString("SVG line %1: %2").arg(xml.lineNumber()).arg(xml.errorString());
+    static const QRegularExpression variable(R"(var\(\s*--([a-z_-]+)\s*\))");
+    static const QStringList colors{
+        "background", "foreground", "accent", "green",           "red",
+        "yellow",     "magenta",    "cyan",   "dark_foreground", "font"};
+    for (auto it = variable.globalMatch(svg); it.hasNext();) {
+        const QString name = it.next().captured(1);
+        if (!colors.contains(QString(name).replace('-', '_')))
+            return "Unknown theme color --" + name + "; use --" +
+                   colors.mid(0, 9).join(", --").replace('_', '-');
+    }
+    QSvgRenderer renderer(themedSvg(svg, {{"foreground", "#000000"}}));
+    if (!renderer.isValid())
+        return "Qt can't draw this SVG";
+    if (renderer.viewBoxF().isEmpty())
+        return "Give the SVG a viewBox, or a width and height";
+    return {};
+}
 Media parseMedia(const QString &source, const QString &base) {
     // Parsing is pure: file existence and modification checks remain at call sites.
     static thread_local QCache<QString, Media> cache(8 * 1024 * 1024);
     const QString key = base + QChar(0) + source;
     if (const auto result = cache.object(key))
         return *result;
-    const auto result = readMedia(source, base);
+    auto result = readMedia(source, base);
+    result.svgBlocks = takeFence(result.text, "svg", &result.svg);
+    if (result.svgBlocks) {
+        QString remaining = result.text, extra;
+        result.svgBlocks += takeFence(remaining, "svg", &extra);
+    }
     cache.insert(key, new Media(result), qMax(1, int((key.size() + result.text.size()) * 2)));
     return result;
 }
@@ -314,6 +482,10 @@ QStringList slideProblems(const QString &source, const QString &base) {
     auto media = parseMedia(source, base);
     if (!media.error.isEmpty())
         errors << media.error;
+    if (media.svgBlocks) {
+        if (const QString problem = svgProblem(media.svg); !problem.isEmpty())
+            errors << problem;
+    }
     if (!media.file.isEmpty() && !QFileInfo::exists(media.path))
         errors << "Missing media: " + media.file;
     if (!media.file.isEmpty() && !media.video && QFileInfo::exists(media.path) &&
@@ -327,7 +499,7 @@ QStringList slideProblems(const QString &source, const QString &base) {
         matches.next();
         ++count;
     }
-    if (count > 1)
+    if (count + media.svgBlocks > 1)
         errors << "Use one media item per slide (combine artwork before importing)";
     return errors;
 }
@@ -615,10 +787,33 @@ static void rememberFit(const QString &key, qreal size) {
     QMutexLocker lock(&fitMutex);
     fittedSizes.insert(key, new qreal(size));
 }
+static QRectF alignedRect(const QSizeF &size, const QRectF &within, Qt::Alignment alignment) {
+    const qreal x = alignment & Qt::AlignLeft    ? within.left()
+                    : alignment & Qt::AlignRight ? within.right() - size.width()
+                                                 : within.center().x() - size.width() / 2;
+    const qreal y = alignment & Qt::AlignTop      ? within.top()
+                    : alignment & Qt::AlignBottom ? within.bottom() - size.height()
+                                                  : within.center().y() - size.height() / 2;
+    return QRectF(QPointF(x, y), size);
+}
 QRectF mediaRect(const Media &media) {
+    if (media.placed()) {
+        const QSizeF box(1920 * media.size / 100, 1080 * media.size / 100);
+        // The margin shrinks as the box grows, so large images stay on the slide.
+        const qreal margin = qMin(60.0, (1080 - box.height()) / 2);
+        return alignedRect(box, QRectF(0, 0, 1920, 1080).adjusted(margin, margin, -margin, -margin),
+                           media.alignment);
+    }
     return media.span ? QRectF(0, 0, 1920, 1080)
                       : (!media.video || media.text.trimmed().isEmpty() ? QRectF(70, 50, 1780, 980)
                                                         : QRectF(100, 280, 1720, 730));
+}
+QRectF mediaImageRect(const Media &media, const QSizeF &image) {
+    const QRectF rect = mediaRect(media);
+    QSizeF scaled = image;
+    scaled.scale(rect.size(), media.span ? Qt::KeepAspectRatioByExpanding : Qt::KeepAspectRatio);
+    // Placed images hug their corner or edge; everything else is centered.
+    return alignedRect(scaled, rect, media.alignment);
 }
 void paintSlide(QPainter *p, const QRectF &target, const QString &source, const QString &base,
                 const QVariantMap &inputPalette, QString *warning, bool overlayOnly,
@@ -640,13 +835,31 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
     QString text = media.text.trimmed();
     auto problems = slideProblems(source, base);
     QRectF area(130, 90, 1660, 900);
+    if (!media.svg.isEmpty() && media.file.isEmpty()) {
+        // Like a video, a drawing under a headline leaves the headline a band at the top.
+        const QRectF rect =
+            text.isEmpty() ? QRectF(70, 50, 1780, 980) : QRectF(100, 280, 1720, 730);
+        if (!text.isEmpty())
+            area = QRectF(130, 40, 1660, 205);
+        QSvgRenderer svg(themedSvg(media.svg, palette));
+        if (!overlayOnly && !backgroundOnly && svg.isValid() && !svg.viewBoxF().isEmpty()) {
+            QSizeF size = svg.viewBoxF().size();
+            size.scale(rect.size(), Qt::KeepAspectRatio);
+            svg.setAspectRatioMode(Qt::KeepAspectRatio);
+            svg.render(p, QRectF(rect.center() - QPointF(size.width(), size.height()) / 2, size));
+        }
+    }
     if (!media.file.isEmpty()) {
         QString path =
             media.video ? (media.poster.isEmpty() ? ensurePoster(media.path, base) : media.poster)
                         : media.path;
         const QRectF rect = mediaRect(media);
         const QSize pixels = p->deviceTransform().mapRect(rect).size().toSize();
-        QImage image = loadedImage(path, pixels, media.span);
+        // An SVG with nothing over it is drawn as vectors, sharp at any size and in PDF. Its
+        // small raster only gives its shape and edge colors for the background.
+        const bool vector = !media.video && (text.isEmpty() || media.placed()) &&
+                            QStringList{"svg", "svgz"}.contains(QFileInfo(path).suffix().toLower());
+        QImage image = loadedImage(path, vector ? QSize(480, 270) : pixels, media.span);
         // Video backgrounds use the first frame, even with a custom poster.
         const QImage backdrop = media.video && !media.span && !media.poster.isEmpty() &&
             (media.background == "blur" || media.background == "auto")
@@ -655,8 +868,8 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
             if (!backdrop.isNull())
                 p->drawImage(QRectF(0, 0, 1920, 1080), blurredBackground(backdrop));
         }
-        if ((!media.video || !media.background.isEmpty()) && !media.span && media.background != "theme" &&
-            (bg.isEmpty() || !media.background.isEmpty())) {
+        if ((!media.video || !media.background.isEmpty()) && !media.span && !media.placed() &&
+            media.background != "theme" && (bg.isEmpty() || !media.background.isEmpty())) {
             QColor color(media.background);
             if ((media.background.isEmpty() || media.background == "auto") && !backdrop.isNull()) {
                 // Quantized edge votes ignore transparent pixels and tolerate compression noise.
@@ -701,29 +914,42 @@ void paintSlide(QPainter *p, const QRectF &target, const QString &source, const 
         }
 
         if (!overlayOnly && !backgroundOnly && !image.isNull()) {
-            QSizeF scaled = image.size();
-            scaled.scale(rect.size(),
-                         media.span ? Qt::KeepAspectRatioByExpanding : Qt::KeepAspectRatio);
-            QRectF dest(QPointF(rect.center().x() - scaled.width() / 2,
-                                rect.center().y() - scaled.height() / 2),
-                        scaled);
+            const QRectF dest = mediaImageRect(media, image.size());
             p->save();
             p->setClipRect(rect);
-            p->drawImage(dest, !media.video && !text.isEmpty() ? softenedImage(image, dest.size()) : image);
+            QSvgRenderer svg;
+            if (vector && svg.load(path)) {
+                svg.setAspectRatioMode(Qt::KeepAspectRatio);
+                svg.render(p, dest);
+            } else
+                p->drawImage(dest, !media.video && !media.placed() && !text.isEmpty()
+                                       ? softenedImage(image, dest.size())
+                                       : image);
             p->restore();
         } else if (!overlayOnly && !backgroundOnly) {
             p->setPen(QColor(palette["accent"].toString()));
+            const QString message = "Missing media\n" + media.file;
             QFont diagnostic("sans");
-            diagnostic.setPixelSize(32);
+            // Shrink the notice to fit small placed boxes, and never draw past them.
+            for (int size = 32; size >= 8; size -= 2) {
+                diagnostic.setPixelSize(size);
+                if (QRectF(QFontMetricsF(diagnostic).boundingRect(rect, Qt::AlignCenter, message))
+                        .width() <= rect.width())
+                    break;
+            }
+            p->save();
+            p->setClipRect(rect);
             p->setFont(diagnostic);
-            p->drawText(rect, Qt::AlignCenter, "Missing media\n" + media.file);
+            p->drawText(rect, Qt::AlignCenter, message);
+            p->restore();
         }
-        if (!media.video || media.span) {
+        // Text beside a placed image keeps the theme's colors and full area.
+        if (!media.placed() && (!media.video || media.span)) {
             if (!backgroundOnly)
                 p->fillRect(QRectF(0, 0, 1920, 1080), QColor(0, 0, 0, qRound(media.overlay * 255)));
             if (fg.isEmpty() && !text.isEmpty())
                 palette["foreground"] = "#ffffff";
-        } else if (!text.isEmpty())
+        } else if (!media.placed() && !text.isEmpty())
             area = QRectF(130, 40, 1660, 205);
     }
     if (backgroundOnly) {
