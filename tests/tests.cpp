@@ -32,6 +32,7 @@
 #include <QQuickWindow>
 #include <QQuickItemGrabResult>
 #include <QSettings>
+#include <QScreen>
 #include <QSaveFile>
 #include <QScopeGuard>
 #include <QSemaphore>
@@ -168,6 +169,14 @@ static void write(const QString &path, const QString &content) {
         portal.result = 2;
         QVERIFY(FileDialog::choose(false, "/tmp", "Media", {"*.png"}, &error).isEmpty());
         QVERIFY(!error.isEmpty());
+    }
+    void speakerNotesIgnoreDirectivesAndCode() {
+        Deck deck;
+        deck.editSlide("<!-- First note -->\n\n<!-- hype: background=\"#112233\" -->\n\n# Title\n\n"
+                       "```html\n<!-- Shown as code, not a note -->\n```\n\n<!-- Second\nline -->");
+        QCOMPARE(deck.speakerNotes(), QString("First note\n\nSecond\nline"));
+        deck.editSlide("# Title\n<!-- Hype makes Markdown presentations. -->");
+        QCOMPARE(deck.speakerNotes(), QString("Hype makes Markdown presentations."));
     }
     void followsDesktopTheme() {
         QTemporaryDir files;
@@ -637,6 +646,156 @@ static void write(const QString &path, const QString &content) {
         QCOMPARE(deck.selected(), 0);
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!history->property("visible").toBool());
+        window->setProperty("allowClose", true);
+        window->close();
+    }
+    void presenterScreensAndCloseWhilePresenting() {
+        if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
+            QSKIP("Set HYPE_GUI_TESTS=1");
+        Deck deck;
+        deck.editSource("# First\n---\n# Last\n");
+        QQuickStyle::setStyle("Basic");
+        qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+        qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("deck", &deck);
+        engine.addImageProvider("slides", new Thumbnails(&deck));
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        auto presenterWindow = window->findChild<QQuickWindow *>("presenterWindow");
+        QVERIFY(presenterWindow);
+
+        // Screens are matched by connector name and position, never by object identity.
+        auto screen = [](const QString &name, int x) {
+            return QVariantMap{{"name", name}, {"virtualX", x}, {"virtualY", 0}};
+        };
+        auto pick = [&](const QVariantMap &current, const QVariantList &screens) {
+            QVariant result;
+            if (!QMetaObject::invokeMethod(window, "presentationScreens",
+                                           Q_RETURN_ARG(QVariant, result), Q_ARG(QVariant, current),
+                                           Q_ARG(QVariant, screens)))
+                return QStringList{"invoke failed"};
+            const auto picked = result.toMap();
+            const QString notes = picked.value("notes").toMap().value("name").toString();
+            return QStringList{picked.value("audience").toMap().value("name").toString(),
+                               notes.isEmpty() ? "none" : notes};
+        };
+        const auto laptop = screen("eDP-1", 0), hdmi = screen("HDMI-A-1", 1920),
+                   dock = screen("DP-4", 1920);
+        QCOMPARE(pick(laptop, {laptop}), QStringList({"eDP-1", "none"}));
+        QCOMPARE(pick(laptop, {laptop, dock}), QStringList({"DP-4", "eDP-1"}));
+        QCOMPARE(pick(laptop, {dock, laptop, hdmi}), QStringList({"HDMI-A-1", "eDP-1"}));
+        QCOMPARE(pick(hdmi, {hdmi, laptop}), QStringList({"HDMI-A-1", "eDP-1"}));
+        QCOMPARE(pick(dock, {laptop, dock}), QStringList({"DP-4", "eDP-1"}));
+        QCOMPARE(pick(hdmi, {dock, hdmi, laptop}), QStringList({"HDMI-A-1", "eDP-1"}));
+        auto notes = presenterWindow->findChild<QObject *>("presenterNotes");
+        QVERIFY(notes);
+        deck.editSource("# One\n<!-- First note -->\n---\n# Two\n<!-- Second note -->\n");
+        QCOMPARE(notes->property("text").toString(), QString("First note"));
+        deck.select(1);
+        QCOMPARE(notes->property("text").toString(), QString("Second note"));
+
+        // Closing with unsaved changes while presenting brings the editor back before asking.
+        QVERIFY(deck.dirty());
+        QVERIFY(QMetaObject::invokeMethod(window, "togglePresent"));
+        QVERIFY(window->property("presenting").toBool());
+        QTRY_COMPARE(window->visibility(), QWindow::FullScreen);
+        window->close();
+        QVERIFY(window->isVisible());
+        QVERIFY(!window->property("presenting").toBool());
+        QVERIFY(!presenterWindow->isVisible());
+        QTRY_VERIFY(window->visibility() != QWindow::FullScreen);
+        QTRY_VERIFY(window->property("popupOpen").toBool());
+        window->setProperty("allowClose", true);
+        window->close();
+    }
+    void presenterViewUsesSeparateScreens() {
+        if (!qEnvironmentVariableIsSet("HYPE_GUI_TESTS"))
+            QSKIP("Set HYPE_GUI_TESTS=1");
+        const auto screens = QGuiApplication::screens();
+        if (screens.size() != 2)
+            QSKIP("Run with offscreen:configfile=tests/fixtures/presenter-screens.json");
+        QScreen *laptop = nullptr, *external = nullptr;
+        for (auto *screen : screens) {
+            if (screen->name().startsWith("eDP"))
+                laptop = screen;
+            else
+                external = screen;
+        }
+        if (!laptop || !external)
+            QSKIP("This check needs a laptop panel and an external display");
+        QTemporaryDir tmp;
+        QVERIFY(QDir().mkpath(tmp.filePath("images")));
+        QVERIFY(
+            QFile::copy(QFINDTESTDATA("fixtures/animated.webp"), tmp.filePath("images/demo.webp")));
+        Deck deck;
+        QVERIFY(deck.savePath(tmp.filePath("talk.md")));
+        deck.editSource("# One\n<!-- First note -->\n---\n# Two\n<!-- Second note -->\n"
+                        "---\n![loop](demo.webp)\n<!-- Last note -->\n");
+        QQuickStyle::setStyle("Basic");
+        qmlRegisterType<SlideItem>("Hype", 1, 0, "SlideCanvas");
+        qmlRegisterType<AppTheme>("Hype", 1, 0, "AppTheme");
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("deck", &deck);
+        engine.addImageProvider("slides", new Thumbnails(&deck));
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        auto presenter = window->findChild<QQuickWindow *>("presenterWindow");
+        QVERIFY(presenter);
+        auto notes = presenter->findChild<QQuickItem *>("presenterNotes");
+        QVERIFY(notes);
+        window->setScreen(laptop);
+        window->setGeometry(QRect(laptop->geometry().topLeft() + QPoint(30, 20), QSize(1200, 760)));
+        window->showNormal();
+        window->requestActivate();
+        QTRY_COMPARE(window->screen(), laptop);
+        QTRY_VERIFY(window->isActive());
+        QTest::qWait(100);
+        const QRect original = window->geometry();
+        QTest::keyClick(window, Qt::Key_F5);
+        QTRY_VERIFY(window->property("presenting").toBool());
+        QTRY_COMPARE(window->screen(), external);
+        QTRY_COMPARE(window->visibility(), QWindow::FullScreen);
+        QTRY_VERIFY(presenter->isVisible());
+        QCOMPARE(presenter->screen(), laptop);
+        presenter->requestActivate();
+        QTRY_VERIFY(presenter->isActive());
+        notes->forceActiveFocus();
+        QTest::keyClick(presenter, Qt::Key_Right);
+        QTRY_COMPARE(deck.selected(), 1);
+        QCOMPARE(notes->property("text").toString(), QString("Second note"));
+        QTest::keyClick(presenter, Qt::Key_F5, Qt::ShiftModifier);
+        QTRY_COMPARE(deck.selected(), 0);
+        QTest::keyClick(presenter, Qt::Key_End);
+        QTRY_COMPARE(deck.selected(), 2);
+        auto loader = window->findChild<QObject *>("animationLoader");
+        QVERIFY(loader);
+        QTRY_VERIFY(loader->property("item").value<QObject *>());
+        auto animation = loader->property("item").value<QObject *>();
+        QTRY_VERIFY(!animation->property("paused").toBool());
+        QTest::keyClick(presenter, Qt::Key_Space);
+        QTRY_VERIFY(animation->property("paused").toBool());
+        QTest::keyClick(presenter, Qt::Key_Escape);
+        QTRY_VERIFY(!window->property("presenting").toBool());
+        QTRY_VERIFY(!presenter->isVisible());
+        QTRY_COMPARE(window->screen(), laptop);
+        QTRY_COMPARE(window->geometry(), original);
+        QTRY_COMPARE(window->visibility(), QWindow::Windowed);
+        // Starting on the audience output keeps it there, and closing Notes ends the show.
+        window->setScreen(external);
+        window->setPosition(external->geometry().topLeft());
+        window->showMaximized();
+        QTRY_COMPARE(window->screen(), external);
+        QTest::keyClick(window, Qt::Key_F5);
+        QTRY_VERIFY(presenter->isVisible());
+        QCOMPARE(window->screen(), external);
+        QCOMPARE(presenter->screen(), laptop);
+        presenter->close();
+        QTRY_VERIFY(!window->property("presenting").toBool());
+        QTRY_COMPARE(window->visibility(), QWindow::Maximized);
+        QCOMPARE(window->screen(), external);
         window->setProperty("allowClose", true);
         window->close();
     }
@@ -2586,6 +2745,8 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(window->property("presenting").toBool());
         QVERIFY(!window->findChild<QQuickItem *>("editorPane")->isVisible());
         QVERIFY(stage->isVisible());
+        QVERIFY2(!window->findChild<QQuickWindow *>("presenterWindow")->isVisible(),
+                 "Presenter View opened on the only screen, covering the slides");
         QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
         QVERIFY(!window->property("presenting").toBool());
         QVERIFY(editor->isVisible());
@@ -2600,6 +2761,13 @@ static void write(const QString &path, const QString &content) {
         QCOMPARE(d.selected(), 0);
         QTest::keyClick(window, Qt::Key_Escape);
         QVERIFY(!window->property("presenting").toBool());
+        auto presenterWindow = window->findChild<QQuickWindow *>("presenterWindow");
+        QVERIFY(presenterWindow);
+        window->setProperty("presenting", true);
+        presenterWindow->show();
+        presenterWindow->requestActivate();
+        QTest::keyClick(presenterWindow, Qt::Key_Escape);
+        QTRY_VERIFY(!window->property("presenting").toBool());
         QString trial2025 = QFINDTESTDATA("../trials/rails-world-2025/presentation.md");
         if (!trial2025.isEmpty()) {
             QVERIFY(d.loadPath(trial2025));

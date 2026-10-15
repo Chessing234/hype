@@ -233,6 +233,13 @@ Slide navigation and selection shortcuts apply when the sidebar or preview has f
 | Escape | Leave presentation |
 | Space | Play / pause video while presenting |
 
+With more than one display, Hype sends the slides fullscreen to an external display
+and opens Presenter View on the laptop display with the current slide, next slide,
+and any speaker notes written as `<!-- comments -->`. If Hype is already on an
+external display, that display remains the audience display. Navigate from either
+display with the presentation shortcuts. Connecting or disconnecting a display ends
+the show and returns to the editor on a connected display.
+
 The mouse wheel over the sidebar selects the previous or next slide. Home/End jumps to the first/last slide when the focus is in the slides list (Visual mode or Overview) and moves to the start/end of the line when a text box has focus. Page Up/Down scrolls a page; Ctrl+Home/End goes to the start/end of the text. Slide movement shortcuts work when the sidebar, preview, or Overview has focus; they leave the selected slides together and stop at the deck boundaries. While typing, Ctrl+Up/Down navigates one slide and Ctrl+Page Up/Page Down navigates five, keeping the text editor focused.
 
 ## Run from source
@@ -247,3 +254,12 @@ To build Hype yourself, install a C++17 compiler, make, Qt 6.9 or newer, FFmpeg,
 `bin/build` uses a Qt toolchain under `build/qt/` when present, then falls back to `qmake6` on your PATH. It checks for Qt 6.9 or newer before compiling. Set `HYPE_QMAKE=/path/to/qmake6` to select a different toolchain.
 
 For a launcher entry that rebuilds this checkout when opened, run `./bin/install-dev` and choose **Hype (Development)**.
+
+Run `./bin/test` for the regression suite. After building the tests, the presenter
+check can also run with two virtual displays:
+
+```sh
+HYPE_GUI_TESTS=1 QT_QPA_PLATFORMTHEME=generic QT_STYLE_OVERRIDE=Fusion \
+  QT_QPA_PLATFORM="offscreen:configfile=$PWD/tests/fixtures/presenter-screens.json" \
+  ./build/tests/hype-tests presenterViewUsesSeparateScreens
+```

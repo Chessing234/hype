@@ -98,6 +98,19 @@ static QString withoutComments(QString source) {
         source.remove(it->first, it->second);
     return source;
 }
+QString speakerNotes(const QString &source) {
+    const QString visible = outsideCode(source);
+    auto matches = QRegularExpression("<!--[\\s\\S]*?-->").globalMatch(visible);
+    QStringList notes;
+    static const QRegularExpression directive("^hype:", QRegularExpression::CaseInsensitiveOption);
+    while (matches.hasNext()) {
+        const auto match = matches.next();
+        QString note = source.mid(match.capturedStart() + 4, match.capturedLength() - 7).trimmed();
+        if (!note.isEmpty() && !directive.match(note).hasMatch())
+            notes.append(note);
+    }
+    return notes.join("\n\n");
+}
 static bool isVideoFile(const QString &file) {
     return QStringList{"mp4", "m4v", "mov", "webm", "mkv"}.contains(
         QFileInfo(file).suffix().toLower());

@@ -33,6 +33,7 @@ class Deck : public QAbstractListModel {
     Q_PROPERTY(int selectionFirst READ selectionFirst NOTIFY selectionChanged)
     Q_PROPERTY(int selectionLast READ selectionLast NOTIFY selectionChanged)
     Q_PROPERTY(int selectionCount READ selectionCount NOTIFY selectionChanged)
+    Q_PROPERTY(QString speakerNotes READ speakerNotes NOTIFY selectionChanged)
     Q_PROPERTY(int count READ count NOTIFY changed)
     Q_PROPERTY(int revision READ revision NOTIFY changed)
     Q_PROPERTY(bool dirty READ dirty NOTIFY changed)
@@ -72,6 +73,7 @@ class Deck : public QAbstractListModel {
     QString source() const { return m_source; }
     QString slideSource() const;
     QString slideText() const;
+    QString speakerNotes() const;
     int selected() const { return m_selected; }
     int selectionFirst() const { return qMin(m_anchor, m_selected); }
     int selectionLast() const { return qMax(m_anchor, m_selected); }
