@@ -134,6 +134,8 @@ For videos, choose **Background → Blurred first frame**, or write `![fit backg
 
 **Background → Match image edges** also works with videos: `![fit background=auto](portrait.mp4)`. It samples the edges of the first frame and keeps that background color during playback, even with a custom poster. Selecting it switches spanning videos to fit.
 
+To put a small image such as a logo in a corner, choose **Place** from the **Layout** menu and pick a position, then choose a **Size**. You can also write it in the brackets: `![position=bottom-right size=10%](logo.png)`. Positions are `top-left`, `top`, `top-right`, `left`, `center`, `right`, `bottom-left`, `bottom`, and `bottom-right`. The size is the share of the slide the image may fill, from 1% to 100%, and defaults to 10% (Small). A placed image keeps its shape and sits just inside the slide edge. The slide's text and theme colors stay as they are, without darkening or white lettering. Placement works with still and animated images, not videos, and replaces `fit`, `span`, and background choices; choosing **Fit** or **Span** removes it. Pasting or dropping a new image onto a placed slide keeps its position and size, so swapping a logo is one step. Pasted images retain enough detail to enlarge them later.
+
 To draw something yourself, write SVG in an `svg` code block. It takes the place of the slide's image, stays sharp, and stays vector in PDF. Name the theme's colors as `var(--accent)`, `var(--foreground)`, and so on, and the drawing follows the theme; shapes and text without colors of their own take the theme's text color, and text takes the presentation's font:
 
 ````markdown
@@ -231,6 +233,13 @@ Slide navigation and selection shortcuts apply when the sidebar or preview has f
 | Escape | Leave presentation |
 | Space | Play / pause video while presenting |
 
+With more than one display, Hype sends the slides fullscreen to an external display
+and opens Presenter View on the laptop display with the current slide, next slide,
+and any speaker notes written as `<!-- comments -->`. If Hype is already on an
+external display, that display remains the audience display. Navigate from either
+display with the presentation shortcuts. Connecting or disconnecting a display ends
+the show and returns to the editor on a connected display.
+
 The mouse wheel over the sidebar selects the previous or next slide. Home/End jumps to the first/last slide when the focus is in the slides list (Visual mode or Overview) and moves to the start/end of the line when a text box has focus. Page Up/Down scrolls a page; Ctrl+Home/End goes to the start/end of the text. Slide movement shortcuts work when the sidebar, preview, or Overview has focus; they leave the selected slides together and stop at the deck boundaries. While typing, Ctrl+Up/Down navigates one slide and Ctrl+Page Up/Page Down navigates five, keeping the text editor focused.
 
 ## Run from source
@@ -245,3 +254,12 @@ To build Hype yourself, install a C++17 compiler, make, Qt 6.9 or newer, FFmpeg,
 `bin/build` uses a Qt toolchain under `build/qt/` when present, then falls back to `qmake6` on your PATH. It checks for Qt 6.9 or newer before compiling. Set `HYPE_QMAKE=/path/to/qmake6` to select a different toolchain.
 
 For a launcher entry that rebuilds this checkout when opened, run `./bin/install-dev` and choose **Hype (Development)**.
+
+Run `./bin/test` for the regression suite. After building the tests, the presenter
+check can also run with two virtual displays:
+
+```sh
+HYPE_GUI_TESTS=1 QT_QPA_PLATFORMTHEME=generic QT_STYLE_OVERRIDE=Fusion \
+  QT_QPA_PLATFORM="offscreen:configfile=$PWD/tests/fixtures/presenter-screens.json" \
+  ./build/tests/hype-tests presenterViewUsesSeparateScreens
+```
