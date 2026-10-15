@@ -178,6 +178,32 @@ static void write(const QString &path, const QString &content) {
         deck.editSlide("# Title\n<!-- Hype makes Markdown presentations. -->");
         QCOMPARE(deck.speakerNotes(), QString("Hype makes Markdown presentations."));
     }
+    void readsThemeColorFormats() {
+        QTemporaryDir files;
+        QVERIFY(QDir().mkpath(files.filePath("theme")));
+        const QStringList values{"#224488",
+                                 "'#224488'",
+                                 "\"#224488\"",
+                                 "#224488 # secondary-400",
+                                 "'#224488' # secondary-400",
+                                 "\"#224488\" # secondary-400",
+                                 "'#224488'# secondary-400",
+                                 "\"#224488\"# secondary-400"};
+        for (const auto &value : values) {
+            write(files.filePath("theme/colors.toml"), "accent = " + value + '\n');
+            AppTheme theme(files.path());
+            QVERIFY2(theme.colors().value("accent").value<QColor>() == QColor("#224488"),
+                     qPrintable(value));
+        }
+        // An incomplete string or a note inside a quoted value is not a hex color.
+        for (const auto &value : {QString("'#224488"), QString("\"#224488"),
+                                  QString("\"#224488# note\""), QString("#224488ff")}) {
+            write(files.filePath("theme/colors.toml"), "accent = " + value + '\n');
+            AppTheme theme(files.path());
+            QVERIFY2(theme.colors().value("accent").value<QColor>() != QColor("#224488"),
+                     qPrintable(value));
+        }
+    }
     void followsDesktopTheme() {
         QTemporaryDir files;
         const QString current = files.path() + "/current";
@@ -187,7 +213,8 @@ static void write(const QString &path, const QString &content) {
         QVERIFY(QDir().mkpath(dark));
         QVERIFY(QDir().mkpath(light));
         write(dark + "/colors.toml", "background = '#101020'\nforeground = '#eeeeee'\naccent = '#7788ff'\n");
-        write(light + "/colors.toml", "background = '#ffffff'\nforeground = '#111111'\naccent = '#224488'\n");
+        write(light + "/colors.toml", "background = '#ffffff'\nforeground = '#111111'\n"
+                                      "accent = #224488 # secondary-400\n");
         write(light + "/hyprland.lua", "hl.config({\n  decoration = {\n    rounding = 6,\n    -- rounding = 12,\n  },\n})\n");
         QVERIFY(QFile::link(dark, current + "/theme"));
         AppTheme theme(current);

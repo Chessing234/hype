@@ -37,11 +37,13 @@ void AppTheme::reload() {
     QMap<QString, QColor> values;
     QFile file(path);
     if (file.open(QIODevice::ReadOnly)) {
-        const QRegularExpression entry(R"re(^\s*([a-z_]+)\s*=\s*["'](#[0-9a-fA-F]{6})["'])re");
+        // Quoted or bare hex with an optional note. Quotes must pair; comments need no gap.
+        const QRegularExpression entry(
+            R"re(^\s*([a-z_]+)\s*=\s*(["']?)(#[0-9a-fA-F]{6})\2\s*(?:#.*)?\s*$)re");
         while (!file.atEnd()) {
             const auto match = entry.match(QString::fromUtf8(file.readLine()));
             if (match.hasMatch())
-                values[match.captured(1)] = QColor(match.captured(2));
+                values[match.captured(1)] = QColor(match.captured(3));
         }
     }
     const QColor bg = values.value("background", QColor("#1a1b26"));
