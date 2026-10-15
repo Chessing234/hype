@@ -71,23 +71,33 @@ ApplicationWindow {
         presenting = !presenting
         if (presenting) {
             win.focusedEditor = ""
-            presentationReturnScreen = win.screen
+            // Window.screen follows the window as it moves. Save a stable display wrapper.
+            const displays = Qt.application.screens
+            const current = displays.find(screen => sameScreen(screen, win.screen)) || win.screen
+            presentationReturnScreen = current
             presentationReturnVisibility = win.visibility
             presentationReturnGeometry = Qt.rect(win.x, win.y, win.width, win.height)
-            const screens = presentationScreens(win.screen, Qt.application.screens)
+            const screens = presentationScreens(current, displays)
+            // Set the output before mapping fullscreen, and move within virtual desktops too.
+            win.hide()
             win.screen = screens.audience
+            win.x = screens.audience.virtualX
+            win.y = screens.audience.virtualY
             win.showFullScreen()
             if (screens.notes) {
                 presenterWindow.screen = screens.notes
+                presenterWindow.x = screens.notes.virtualX
+                presenterWindow.y = screens.notes.virtualY
                 presenterWindow.showFullScreen()
                 Qt.callLater(function() { presenterWindow.requestActivate() })
             } else stage.forceActiveFocus()
         } else {
             presenterWindow.hide()
             player.stop()
-            // Wayland compositors retain a fullscreen window's output when it is
-            // normalized. Take it off-screen first so the saved editor output and
-            // geometry are applied before the window is mapped again.
+            // Clear fullscreen before restoring the editor's output and geometry.
+            // Remap only after both are set, since showNormal restores Qt's own saved geometry.
+            win.hide()
+            win.showNormal()
             win.hide()
             if (presentationReturnScreen) win.screen = presentationReturnScreen
             if (presentationReturnGeometry.width > 0) {
@@ -112,6 +122,22 @@ ApplicationWindow {
         // Window.screen and Qt.application.screens wrap the same display in
         // distinct objects, so identity comparison never matches between them.
         return !!a && !!b && a.name === b.name && a.virtualX === b.virtualX && a.virtualY === b.virtualY
+    }
+    Connections {
+        target: Qt.application
+        // A removed presenter display must never move private notes onto the audience display.
+        function onScreensChanged() {
+            if (!win.presenting) return
+            const screens = Qt.application.screens
+            if (screens.length && !screens.some(screen => win.sameScreen(screen, win.presentationReturnScreen))) {
+                const screen = screens[0]
+                win.presentationReturnScreen = screen
+                win.presentationReturnGeometry = Qt.rect(screen.virtualX, screen.virtualY,
+                    Math.min(win.presentationReturnGeometry.width, screen.width),
+                    Math.min(win.presentationReturnGeometry.height, screen.height))
+            }
+            win.togglePresent()
+        }
     }
     // Pure so tests can pass fake screens. Picks the audience screen and the
     // presenter screen, which is null without a second display.
